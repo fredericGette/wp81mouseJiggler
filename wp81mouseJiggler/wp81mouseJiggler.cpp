@@ -12,6 +12,7 @@ static HANDLE hEventConnCmpltReceived = NULL;
 static HANDLE hEventPairingConfirmReceived = NULL;
 static HANDLE hEventPairingRndReceived = NULL;
 static HANDLE hEventLTKRqstReceived = NULL;
+static HANDLE hEventXchgMTURqstReceived = NULL;
 static BYTE pairingRequest[7]; // MSB first
 static BYTE pairingResponse[7]; // MSB first
 static BYTE iat; // Initiating device address type
@@ -19,6 +20,7 @@ static BYTE ia[6]; // Initiating device address (MSB first)
 static BYTE rat = 0x00; // Responding device address type = public
 static BYTE ra[6]; // Responding device address 
 static BYTE mRand[16]; // Pairing random send by the initiator/master device (MSB first)
+static BYTE mtu[2] = {23,0}; // MTU common to initiating and responding device (default minimum = 23 bytes)
 
 // Debug helper
 void printBuffer2HexString(BYTE* buffer, size_t bufSize, BOOL isReceived, CHAR source)
@@ -166,6 +168,12 @@ void storePairingRandomReceived(BYTE* pairingRndReceived)
 	}
 }
 
+void storeMTUReceived(BYTE* exchangeMTURequestReceived)
+{
+	mtu[0] = exchangeMTURequestReceived[14];
+	mtu[1] = exchangeMTURequestReceived[15];
+}
+
 DWORD WINAPI readAclData(void* notUsed)
 {
 	HANDLE hciControlDeviceAcl;
@@ -229,7 +237,16 @@ DWORD WINAPI readAclData(void* notUsed)
 				storePairingRandomReceived(readAcl_outputBuffer);
 				SetEvent(hEventPairingRndReceived);
 			}
-
+			else if (returned == 16
+				&& readAcl_outputBuffer[4] == 0x02 // ACL message
+				&& readAcl_outputBuffer[11] == 0x04 // Attribute Protocol
+				&& readAcl_outputBuffer[13] == 0x02 // Exchange MTU Request
+				)
+			{
+				printf("Received exchange MTU request\n");
+				storeMTUReceived(readAcl_outputBuffer);
+				SetEvent(hEventXchgMTURqstReceived);
+			}
 		}
 		else
 		{
@@ -469,6 +486,14 @@ int main()
 		L"WP81_WAIT_FOR_CONNECTION_COMPLETE"
 	);
 
+	// Prepare to wait for the exchange MTU request
+	hEventXchgMTURqstReceived = CreateEventW(
+		NULL,
+		TRUE,	// manually reset
+		FALSE,	// initial state: nonsignaled
+		L"WP81_WAIT_FOR_EXCHANGE_MTU_REQUEST"
+	);
+
 	printf("Send LE Set Advertise Enable Command\n");
 	i = 0;
 	cmd_inputBuffer[i++] = 0x04; // Length of the IOCTL message
@@ -557,8 +582,11 @@ int main()
 		0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA
 	};
 
-	printf("Wait for the Pairing Confirm and the Connection Complete\n");
-	if (WaitForSingleObject(hEventPairingConfirmReceived, 2000) == WAIT_OBJECT_0 && WaitForSingleObject(hEventConnCmpltReceived, 2000) == WAIT_OBJECT_0)
+	printf("Wait for the Connection Complete\n");
+	WaitForSingleObject(hEventConnCmpltReceived, 2000);
+
+	printf("Wait for the Pairing Confirm\n");
+	if (WaitForSingleObject(hEventPairingConfirmReceived, 2000) == WAIT_OBJECT_0)
 	{
 		printf("Compute pairing confirm\n");
 		BYTE confirmValue[16];
@@ -826,6 +854,44 @@ int main()
 	{
 		printf("Master Identification sent\n");
 		printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
+	}
+
+	printf("Wait for the Exchange MTU Request\n");
+	if (WaitForSingleObject(hEventXchgMTURqstReceived, 1000) == WAIT_OBJECT_0)
+	{
+		printf("Send Exchange MTU Response\n");
+		i = 0;
+		cmd_inputBuffer[i++] = 0x0B; // Length of the IOCTL message
+		cmd_inputBuffer[i++] = 0x00;
+		cmd_inputBuffer[i++] = 0x00;
+		cmd_inputBuffer[i++] = 0x00;
+		cmd_inputBuffer[i++] = 0x02; // ACL data
+		cmd_inputBuffer[i++] = connectionHandle[0];
+		cmd_inputBuffer[i++] = connectionHandle[1];
+		cmd_inputBuffer[i++] = 0x07; // Length of the ACL message
+		cmd_inputBuffer[i++] = 0x00; // 
+		cmd_inputBuffer[i++] = 0x03; // Length of the L2CAP message
+		cmd_inputBuffer[i++] = 0x00; //
+		cmd_inputBuffer[i++] = 0x04; // Attribute Protocol
+		cmd_inputBuffer[i++] = 0x00; //
+		cmd_inputBuffer[i++] = 0x03; // Exchange MTU Response
+		cmd_inputBuffer[i++] = mtu[0]; // EDIV value
+		cmd_inputBuffer[i++] = mtu[1]; //
+		printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
+		success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
+		if (!success)
+		{
+			printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+		}
+		else
+		{
+			printf("Exchange MTU Response sent\n");
+			printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
+		}
+	}
+	else
+	{
+		printf("No Exchange MTU Request received\n");
 	}
 
 	printf("Wait before exit\n");
