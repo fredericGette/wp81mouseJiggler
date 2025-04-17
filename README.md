@@ -15,12 +15,12 @@ LE Legacy Pairing:
 |:-:|-:|:-:|:-|:-|
 |1| | <- | Pairing Request | |
 |2| Pairing Response | -> | | |
-|3| | <- | Pairing Confirm | _Computed from information coming from the Pairing Request/Response_ |
+|3| | <- | Pairing Confirm | _Computed with a random value and information coming from the Pairing Request/Response_ |
 |4| Pairing Confirm | -> | | |
-|5| | <- | Pairing Random | _Final element required to compute the Pairing Confirm and check its correctness_ |
+|5| | <- | Pairing Random | _Random value used to compute the Pairing Confirm_ |
 |6| Pairing Random | -> | | |
 |7| | <- | LTK Request | _In fact it's the STK_ |
-|8| LTK Request Reply | -> | | _Must compute the same STK than the Initiating device_ |
+|8| LTK Request Reply | -> | | _Responding device must compute the same STK than the Initiating device_ |
 |9| Encryption Information | -> | | _The real LTK_ |
 |10| Master Identification | -> | | _A key to store the LTK_ |
 |11| | <- | Signing Information | _Can be ignored_ |
