@@ -8,4 +8,29 @@ Example with a Chromebook:
 Tested with the following configurations:
 - Ubuntu 23.10 (Dell Latitude E5470)
 - ChromeOS 134.0 (ASUS CX5601)
+- Windows 10 Pro (Dell Latitude E5470)
 
+LE Legacy Pairing:  
+| | mouse | | computer | |
+|:-:|-:|:-:|:-|:-|
+|1| | 🡸 | Pairing Request | |
+|2| Pairing Response | 🢂 | | |
+|3| | 🡸 | Pairing Confirm | _Computed from information coming from the Pairing Request/Response_ |
+|4| Pairing Confirm | 🢂 | | |
+|5| | 🡸 | Pairing Random | _Final element required to compute the Pairing Confirm and check its correctness_ |
+|6| Pairing Random | 🢂 | | |
+|7| | 🡸 | LTK Request | _In fact it's the STK_ |
+|8| LTK Request Reply | 🢂 | | _Must compute the same STK than the Initiating device_ |
+|9| Encryption Information | 🢂 | | _The real LTK_ |
+|10| Master Identification | 🢂 | | _A key to store the LTK_ |
+|11| | 🡸 | Signing Information | _Can be ignored_ |
+
+The mouse is:  
+- The Bluetooth Low Energy **Slave**
+- The **Responding** device during the pairing process
+- The Attribute **Server**
+
+The computer is:  
+- The Bluetooth Low Energy **Master**
+- The **Initiator** device during the pairing process
+- The Attribute **Client**
