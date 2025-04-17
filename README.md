@@ -1,7 +1,7 @@
 # wp81mouseJiggler
 Turn your _Lumia 520_ into a kind of _Microsoft Bluetooth Mobile Mouse 3600_.
 
-Example with a Chromebook (ASUS CX5601, ChromeOS 134.0.6998.198)  
+Example with a Chromebook:   
 ![video capture ChromeOS](lumiaMouse520_chromeos.gif)  
 (animated gif optimized with [gifsicle](https://github.com/kohler/gifsicle))  
 
