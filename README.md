@@ -34,3 +34,7 @@ The computer is:
 - The Bluetooth Low Energy **Master**
 - The **Initiator** device during the pairing process
 - The Attribute **Client**
+
+>[!NOTE]
+>Some Attribute Clients (like ChromeOS) require a Maximum Transmission Unit (MTU) of 23 bytes.  
+>In the case of the Lumia 520, the number of messages lost increases when the Connection Interval is above 7.5ms (this is the minimum Connection Interval authorized).
