@@ -35,7 +35,6 @@ static BYTE connectionHandle[2];
 static HANDLE hEventConnCmpltReceived = NULL;
 static HANDLE hEventLTKRqstReceived = NULL;
 static HANDLE hEventAclDataReceived = NULL;
-static BOOL isXchgMTURqstReceived = FALSE;
 static BYTE pairingRequest[7]; // MSB first
 static BYTE pairingResponse[7]; // MSB first
 static BYTE iat; // Initiating device address type
@@ -48,8 +47,11 @@ static AttributeRequested* pAttributeRequested;
 static BYTE* aclData[2];
 static int activeAclData;
 static int passiveAclData;
-static int passiveAclData2;
 static DWORD aclDataSize[2];
+static BYTE* attMsgReceived; // Last Attribut Protocol message received
+static BYTE* sigMsgReceived; // Last Signaling Protocol message received
+static BYTE* secMsgReceived; // Last Security Manager Protocol message received
+
 
 // Debug helper
 void printBuffer2HexString(BYTE* buffer, size_t bufSize, BOOL isReceived, CHAR source)
@@ -114,11 +116,11 @@ void storeInitiatingDeviceInformation(BYTE* evtConCompltMsgReceived)
 	printf("Remote device address: %02X:%02X:%02X:%02X:%02X:%02X (type %s)\n", ia[0], ia[1], ia[2], ia[3], ia[4], ia[5], iat == 0 ? "public" : "random");
 }
 
-void storeRespondingDeviceInformation(BYTE* bthLocalRadioInfo)
+void storeRespondingDeviceInformation(BYTE* evtReadBdAddrCmdCompltMsgReceived)
 {
 	for (int i = 0; i < 6; i++)
 	{
-		ra[i] = bthLocalRadioInfo[13 - i];
+		ra[i] = evtReadBdAddrCmdCompltMsgReceived[16 - i];
 	}
 	printf("Local device address: %02X:%02X:%02X:%02X:%02X:%02X (type %s)\n", ra[0], ra[1], ra[2], ra[3], ra[4], ra[5], rat == 0 ? "public" : "random");
 }
@@ -158,11 +160,21 @@ DWORD WINAPI readEvents(void* notUsed)
 				printf("Received: Command complete.\n");
 				SetEvent(hEventCmdFinished);
 			}
+			else if (returned == 17 && readEvent_outputBuffer[5] == 0x0E && readEvent_outputBuffer[8] == 0x09 && readEvent_outputBuffer[9] == 0x10)
+			{
+				printf("Received: Read BD ADDR Command complete.\n");
+				storeRespondingDeviceInformation(readEvent_outputBuffer);
+				SetEvent(hEventCmdFinished);
+			}
 			else if (returned == 26 && readEvent_outputBuffer[5] == 0x3E && readEvent_outputBuffer[7] == 0x01)
 			{
 				printf("Received: Connection complete.\n");
 				storeInitiatingDeviceInformation(readEvent_outputBuffer);
 				SetEvent(hEventConnCmpltReceived);
+			}
+			else if (returned == 17 && readEvent_outputBuffer[5] == 0x3E && readEvent_outputBuffer[7] == 0x03)
+			{
+				printf("Received: Connection update complete.\n");
 			}
 			else if (returned == 20 && readEvent_outputBuffer[5] == 0x3E && readEvent_outputBuffer[7] == 0x05)
 			{
@@ -281,6 +293,146 @@ void storeWriteRequest(BYTE* writeRequestReceived)
 	pAttributeRequested->startingHandle[1] = writeRequestReceived[15];
 }
 
+BOOL isExchangeMTURequestReceived()
+{
+	if (attMsgReceived[0] == 0x0B
+		&& attMsgReceived[13] == 0x02 // Exchange MTU Request
+		)
+		return TRUE;
+	return FALSE;
+}
+
+BOOL isReadByTypeRequestReceived()
+{
+	if (attMsgReceived[0] == 0x0F
+		&& attMsgReceived[13] == 0x08 // Read By Type Request
+		)
+		return TRUE;
+	return FALSE;
+}
+
+BOOL isReadByTypeRequestReceivedAndAttributeFound(BYTE uuid0, BYTE uuid1, AttributeData* attributes, int nbAttributes)
+{
+	if (isReadByTypeRequestReceived())
+	{
+		if (attMsgReceived[18] == uuid0 && attMsgReceived[19] == uuid1)
+		{
+			for (int idx = 0; idx < nbAttributes; idx++)
+			{
+				if (attributes[idx].handle[0] >= attMsgReceived[14]		// startingHandle0
+					&& attributes[idx].handle[1] >= attMsgReceived[15]	// startingHandle1
+					&& attributes[idx].handle[0] <= attMsgReceived[16]	// endingHandle0
+					&& attributes[idx].handle[1] <= attMsgReceived[17])	// endingHandle1
+				{
+					return TRUE;
+					break;
+				}
+			}
+		}	
+	}
+		
+	return FALSE;
+}
+
+BOOL isReadByGroupTypeRequestReceived()
+{
+	if (attMsgReceived[0] == 0x0F
+		&& attMsgReceived[13] == 0x10 // Read By Group Type Request
+		)
+		return TRUE;
+	return FALSE;
+}
+
+BOOL isFindByTypeValueRequestReceived()
+{
+	if (attMsgReceived[0] == 0x11
+		&& attMsgReceived[13] == 0x06 // Find By Type Value Request
+		)
+		return TRUE;
+	return FALSE;
+}
+
+BOOL isFindInformationRequestReceived()
+{
+	if (attMsgReceived[0] == 0x0D
+		&& attMsgReceived[13] == 0x04 // Find Information Request
+		)
+		return TRUE;
+	return FALSE;
+}
+
+BOOL isReadRequestReceived()
+{
+	if (attMsgReceived[0] == 0x0B
+		&& attMsgReceived[13] == 0x0A // Read Request
+		)
+		return TRUE;
+	return FALSE;
+}
+
+BOOL isReadBlobRequestReceived()
+{
+	if (attMsgReceived[0] == 0x0D
+		&& attMsgReceived[13] == 0x0C // Read Blob Request
+		)
+		return TRUE;
+	return FALSE;
+}
+
+BOOL isWriteRequestReceived()
+{
+	if (attMsgReceived[0] >= 0x0B
+		&& attMsgReceived[13] == 0x12 // Write Request
+		)
+		return TRUE;
+	return FALSE;
+}
+
+BOOL isPairingRequestReceived()
+{
+	if (secMsgReceived[0] == 0x0F
+		&& secMsgReceived[13] == 0x01 // Pairing Request
+		)
+		return TRUE;
+	return FALSE;
+}
+
+BOOL isPairingConfirmReceived()
+{
+	if (secMsgReceived[0] == 0x19
+		&& secMsgReceived[13] == 0x03 // Pairing confirm
+		)
+		return TRUE;
+	return FALSE;
+}
+
+BOOL isPairingRandomReceived()
+{
+	if (secMsgReceived[0] == 0x19
+		&& secMsgReceived[13] == 0x04 // Pairing Random
+		)
+		return TRUE;
+	return FALSE;
+}
+
+BOOL isSigningInformationReceived()
+{
+	if (secMsgReceived[0] == 0x19
+		&& secMsgReceived[13] == 0x0A // Signing Information
+		)
+		return TRUE;
+	return FALSE;
+}
+
+BOOL isConnectionParameterUpdateResponseReceived()
+{
+	if (sigMsgReceived[0] == 0x0E
+		&& sigMsgReceived[13] == 0x13 // Connection Parameter Update Response
+		)
+		return TRUE;
+	return FALSE;
+}
+
 void parseAclData()
 {
 	BYTE* readAcl_outputBuffer = aclData[activeAclData];
@@ -289,105 +441,84 @@ void parseAclData()
 	ResetEvent(hEventAclDataReceived);
 
 	printBuffer2HexString(readAcl_outputBuffer, returned, TRUE, 'a');
-	if (returned == 20
-		&& readAcl_outputBuffer[4] == 0x02 // ACL message
-		&& readAcl_outputBuffer[11] == 0x06 // Security Manager Protocol
-		&& readAcl_outputBuffer[13] == 0x01 // Pairing request
-		)
+
+	if (returned >= 12 && readAcl_outputBuffer[4] == 0x02) // ACL message
 	{
-		printf("Received: Pairing Request.\n");
-		storeConnectionHandle(readAcl_outputBuffer);
-		storePairingRequest(readAcl_outputBuffer);
-	}
-	else if (returned == 30
-		&& readAcl_outputBuffer[4] == 0x02 // ACL message
-		&& readAcl_outputBuffer[11] == 0x06 // Security Manager Protocol
-		&& readAcl_outputBuffer[13] == 0x03 // Pairing confirm
-		)
-	{
-		printf("Received: Pairing Confirm.\n");
-	}
-	else if (returned == 30
-		&& readAcl_outputBuffer[4] == 0x02 // ACL message
-		&& readAcl_outputBuffer[11] == 0x06 // Security Manager Protocol
-		&& readAcl_outputBuffer[13] == 0x04 // Pairing random
-		)
-	{
-		printf("Received: Pairing Random.\n");
-		storePairingRandomReceived(readAcl_outputBuffer);
-	}
-	else if (returned == 16
-		&& readAcl_outputBuffer[4] == 0x02 // ACL message
-		&& readAcl_outputBuffer[11] == 0x04 // Attribute Protocol
-		&& readAcl_outputBuffer[13] == 0x02 // Exchange MTU Request
-		)
-	{
-		printf("Received: Exchange MTU Request.\n");
-		//storeMTUReceived(readAcl_outputBuffer); We keep our 23 bytes MTU to be compatible with some clients expecting a small MTU from a mouse.
-		isXchgMTURqstReceived = TRUE;
-	}
-	else if (returned == 20
-		&& readAcl_outputBuffer[4] == 0x02 // ACL message
-		&& readAcl_outputBuffer[11] == 0x04 // Attribute Protocol
-		&& readAcl_outputBuffer[13] == 0x08 // Read By Type Request
-		)
-	{
-		printf("Received: Read By Type Request (2 bytes UUID).\n");
-		storeReadAttributeRequest(readAcl_outputBuffer);
-	}
-	else if (returned == 20
-		&& readAcl_outputBuffer[4] == 0x02 // ACL message
-		&& readAcl_outputBuffer[11] == 0x04 // Attribute Protocol
-		&& readAcl_outputBuffer[13] == 0x10 // Read By Group Type Request
-		)
-	{
-		printf("Received: Read By Group Type Request (2 bytes UUID).\n");
-		storeReadAttributeRequest(readAcl_outputBuffer);
-	}
-	else if (returned == 22
-		&& readAcl_outputBuffer[4] == 0x02 // ACL message
-		&& readAcl_outputBuffer[11] == 0x04 // Attribute Protocol
-		&& readAcl_outputBuffer[13] == 0x06 // Find By Type Value Request
-		)
-	{
-		printf("Received: Find By Type Value Request.\n");
-		storeFindAttributeRequest(readAcl_outputBuffer);
-	}
-	else if (returned == 18
-		&& readAcl_outputBuffer[4] == 0x02 // ACL message
-		&& readAcl_outputBuffer[11] == 0x04 // Attribute Protocol
-		&& readAcl_outputBuffer[13] == 0x04 // Find Information Request
-		)
-	{
-		printf("Received: Find Information Request.\n");
-		storeFindInformationRequest(readAcl_outputBuffer);
-	}
-	else if (returned == 16
-		&& readAcl_outputBuffer[4] == 0x02 // ACL message
-		&& readAcl_outputBuffer[11] == 0x04 // Attribute Protocol
-		&& readAcl_outputBuffer[13] == 0x0A // Read Request
-		)
-	{
-		printf("Received: Read Request.\n");
-		storeReadRequest(readAcl_outputBuffer);
-	}
-	else if (returned == 18
-		&& readAcl_outputBuffer[4] == 0x02 // ACL message
-		&& readAcl_outputBuffer[11] == 0x04 // Attribute Protocol
-		&& readAcl_outputBuffer[13] == 0x0C // Read Blob Request
-		)
-	{
-		printf("Received: Read Blob Request.\n");
-		storeReadBlobRequest(readAcl_outputBuffer);
-	}
-	else if (returned >= 16
-		&& readAcl_outputBuffer[4] == 0x02 // ACL message
-		&& readAcl_outputBuffer[11] == 0x04 // Attribute Protocol
-		&& readAcl_outputBuffer[13] == 0x12 // Write Request
-		)
-	{
-		printf("Received: Write Request.\n");
-		storeWriteRequest(readAcl_outputBuffer);
+		switch (readAcl_outputBuffer[11])
+		{
+		case 0x04: // Attribute Protocol
+			memcpy_s(attMsgReceived, 1024, readAcl_outputBuffer, returned);
+			if (isExchangeMTURequestReceived())
+			{
+				printf("Received: Exchange MTU Request.\n");
+				//storeMTUReceived(readAcl_outputBuffer); We keep our 23 bytes MTU to be compatible with some clients expecting a small MTU from a mouse.
+			}
+			else if (isReadByTypeRequestReceived())
+			{
+				printf("Received: Read By Type Request (2 bytes UUID).\n");
+				storeReadAttributeRequest(readAcl_outputBuffer);
+			}
+			else if (isReadByGroupTypeRequestReceived())
+			{
+				printf("Received: Read By Group Type Request (2 bytes UUID).\n");
+				storeReadAttributeRequest(readAcl_outputBuffer);
+			}
+			else if (isFindByTypeValueRequestReceived())
+			{
+				printf("Received: Find By Type Value Request.\n");
+				storeFindAttributeRequest(readAcl_outputBuffer);
+			}
+			else if (isFindInformationRequestReceived())
+			{
+				printf("Received: Find Information Request.\n");
+				storeFindInformationRequest(readAcl_outputBuffer);
+			}
+			else if (isReadRequestReceived())
+			{
+				printf("Received: Read Request.\n");
+				storeReadRequest(readAcl_outputBuffer);
+			}
+			else if (isReadBlobRequestReceived())
+			{
+				printf("Received: Read Blob Request.\n");
+				storeReadBlobRequest(readAcl_outputBuffer);
+			}
+			else if (isWriteRequestReceived())
+			{
+				printf("Received: Write Request.\n");
+				storeWriteRequest(readAcl_outputBuffer);
+			}
+			break;
+		case 0x05: // Signaling Protocol
+			memcpy_s(sigMsgReceived, 1024, readAcl_outputBuffer, returned);
+			if (isConnectionParameterUpdateResponseReceived())
+			{
+				printf("Received: Connection Parameter Update Response.\n");
+			}
+			break;
+		case 0x06: // Security Manager Protocol
+			memcpy_s(secMsgReceived, 1024, readAcl_outputBuffer, returned);
+			if (isPairingRequestReceived())
+			{
+				printf("Received: Pairing Request.\n");
+				storeConnectionHandle(readAcl_outputBuffer);
+				storePairingRequest(readAcl_outputBuffer);
+			}
+			else if (isPairingConfirmReceived())
+			{
+				printf("Received: Pairing Confirm.\n");
+			}
+			else if (isPairingRandomReceived())
+			{
+				printf("Received: Pairing Random.\n");
+				storePairingRandomReceived(readAcl_outputBuffer);
+			}
+			else if (isSigningInformationReceived())
+			{
+				printf("Received: Signing Information.\n");
+			}
+			break;
+		}
 	}
 }
 
@@ -477,7 +608,7 @@ int sendConnectionParameterUpdateRequest(HANDLE hciControlDeviceCmd, BYTE* cmd_i
 	cmd_inputBuffer[i++] = 0x00; //
 	cmd_inputBuffer[i++] = 0x05; // Signaling Protocol
 	cmd_inputBuffer[i++] = 0x00; //
-	cmd_inputBuffer[i++] = 0x12; // Connection Paramter Update Request
+	cmd_inputBuffer[i++] = 0x12; // Connection Parameter Update Request
 	cmd_inputBuffer[i++] = 0x01; // Identifier
 	cmd_inputBuffer[i++] = 0x08; // Length
 	cmd_inputBuffer[i++] = 0x00; // 
@@ -498,48 +629,27 @@ int sendConnectionParameterUpdateRequest(HANDLE hciControlDeviceCmd, BYTE* cmd_i
 	}
 	else
 	{
-		printf("Connection Paramter Update Request sent.\n");
+		printf("Connection Parameter Update Request sent.\n");
 		printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 	}
 
 	return 0;
 }
 
-int main()
+void initData(AttributeData* characteristics, AttributeData* services, AttributeData* informations, BYTE* reportMap, MouseData* mouseData)
 {
-	BYTE* cmd_inputBuffer;
-	BYTE* cmd_outputBuffer;
-	BOOL success;
-	DWORD returned;
-	HANDLE hciControlDeviceCmd;
-	HANDLE bluetoothDevice;
-	HANDLE hThreadEvent;
-	HANDLE hThreadAclData;
-	int i;
-	int n;
-	int result = EXIT_FAILURE;
-	BOOL startedSendingReportMap = FALSE;
-	DWORD nbIterationWoAclRequest = 0;
-	int mouseDataIdx;
-
-	pAttributeRequested = (AttributeRequested*)malloc(sizeof(AttributeRequested));
-	pAttributeRequested->opcode = 0x00;
-	aclData[0] = (BYTE*)malloc(1024);
-	aclData[1] = (BYTE*)malloc(1024);
-
-	AttributeData* characteristics = (AttributeData*)malloc(11 * sizeof(AttributeData));
 	characteristics[0].handle[0] = 0x02;
 	characteristics[0].handle[1] = 0x00;
 	characteristics[0].characteristicProperties = 0x0A; // 0x08 Write | 0x02 Read
-	characteristics[0].characteristicValueHandle[0] = 0x03; 
-	characteristics[0].characteristicValueHandle[1] = 0x00; 
+	characteristics[0].characteristicValueHandle[0] = 0x03;
+	characteristics[0].characteristicValueHandle[1] = 0x00;
 	characteristics[0].UUID16bits[0] = 0x00; // Device Name
 	characteristics[0].UUID16bits[1] = 0x2A; //
-	characteristics[1].handle[0] = 0x04; 
-	characteristics[1].handle[1] = 0x00; 
+	characteristics[1].handle[0] = 0x04;
+	characteristics[1].handle[1] = 0x00;
 	characteristics[1].characteristicProperties = 0x02; // 0x02 Read
-	characteristics[1].characteristicValueHandle[0] = 0x05; 
-	characteristics[1].characteristicValueHandle[1] = 0x00; 
+	characteristics[1].characteristicValueHandle[0] = 0x05;
+	characteristics[1].characteristicValueHandle[1] = 0x00;
 	characteristics[1].UUID16bits[0] = 0x01; // Appearance
 	characteristics[1].UUID16bits[1] = 0x2A; //
 	characteristics[2].handle[0] = 0x06;
@@ -549,8 +659,8 @@ int main()
 	characteristics[2].characteristicValueHandle[1] = 0x00;
 	characteristics[2].UUID16bits[0] = 0x04; // Peripheral Preferred Connection Parameters
 	characteristics[2].UUID16bits[1] = 0x2A; //
-	characteristics[3].handle[0] = 0x0A; 
-	characteristics[3].handle[1] = 0x00; 
+	characteristics[3].handle[0] = 0x0A;
+	characteristics[3].handle[1] = 0x00;
 	characteristics[3].characteristicProperties = 0x02; // 0x02 Read
 	characteristics[3].characteristicValueHandle[0] = 0x0B;
 	characteristics[3].characteristicValueHandle[1] = 0x00;
@@ -580,70 +690,66 @@ int main()
 	characteristics[7].handle[0] = 0x15;
 	characteristics[7].handle[1] = 0x00;
 	characteristics[7].characteristicProperties = 0x02; // 0x02 Read
-	characteristics[7].characteristicValueHandle[0] = 0x16; 
-	characteristics[7].characteristicValueHandle[1] = 0x00; 
+	characteristics[7].characteristicValueHandle[0] = 0x16;
+	characteristics[7].characteristicValueHandle[1] = 0x00;
 	characteristics[7].UUID16bits[0] = 0x4B; // Report Map
 	characteristics[7].UUID16bits[1] = 0x2A; //
 	characteristics[8].handle[0] = 0x17;
-	characteristics[8].handle[1] = 0x00; 
+	characteristics[8].handle[1] = 0x00;
 	characteristics[8].characteristicProperties = 0x1A; // 0x1A = 0x10 Notify | 0x08 Write | 0x02 Read
-	characteristics[8].characteristicValueHandle[0] = 0x18; 
-	characteristics[8].characteristicValueHandle[1] = 0x00; 
+	characteristics[8].characteristicValueHandle[0] = 0x18;
+	characteristics[8].characteristicValueHandle[1] = 0x00;
 	characteristics[8].UUID16bits[0] = 0x33; // Boot Mouse Input Report
 	characteristics[8].UUID16bits[1] = 0x2A; //
 	characteristics[9].handle[0] = 0x1A;
 	characteristics[9].handle[1] = 0x00;
 	characteristics[9].characteristicProperties = 0x02; // 0x02 Read
-	characteristics[9].characteristicValueHandle[0] = 0x1B; 
-	characteristics[9].characteristicValueHandle[1] = 0x00; 
+	characteristics[9].characteristicValueHandle[0] = 0x1B;
+	characteristics[9].characteristicValueHandle[1] = 0x00;
 	characteristics[9].UUID16bits[0] = 0x4A; // HID Information
 	characteristics[9].UUID16bits[1] = 0x2A; //
-	characteristics[10].handle[0] = 0x1C; 
-	characteristics[10].handle[1] = 0x00; 
+	characteristics[10].handle[0] = 0x1C;
+	characteristics[10].handle[1] = 0x00;
 	characteristics[10].characteristicProperties = 0x04; //  0x04 Write Without Response
-	characteristics[10].characteristicValueHandle[0] = 0x1D; 
-	characteristics[10].characteristicValueHandle[1] = 0x00; 
+	characteristics[10].characteristicValueHandle[0] = 0x1D;
+	characteristics[10].characteristicValueHandle[1] = 0x00;
 	characteristics[10].UUID16bits[0] = 0x4C; // HID Control Point
 	characteristics[10].UUID16bits[1] = 0x2A; //
 
-	AttributeData* services = (AttributeData*)malloc(4 * sizeof(AttributeData));
 	services[0].handle[0] = 0x01;
 	services[0].handle[1] = 0x00;
 	services[0].endGroupHandle[0] = 0x07;
 	services[0].endGroupHandle[1] = 0x00;
 	services[0].UUID16bits[0] = 0x00; // Generic Access Profile
 	services[0].UUID16bits[1] = 0x18; //
-	services[1].handle[0] = 0x08; 
-	services[1].handle[1] = 0x00; 
+	services[1].handle[0] = 0x08;
+	services[1].handle[1] = 0x00;
 	services[1].endGroupHandle[0] = 0x08;
 	services[1].endGroupHandle[1] = 0x00;
 	services[1].UUID16bits[0] = 0x01; // Generic Attribute Profile
 	services[1].UUID16bits[1] = 0x18; //
-	services[2].handle[0] = 0x09; 
-	services[2].handle[1] = 0x00; 
-	services[2].endGroupHandle[0] = 0x0D; 
-	services[2].endGroupHandle[1] = 0x00; 
+	services[2].handle[0] = 0x09;
+	services[2].handle[1] = 0x00;
+	services[2].endGroupHandle[0] = 0x0D;
+	services[2].endGroupHandle[1] = 0x00;
 	services[2].UUID16bits[0] = 0x0A; // Device Information
 	services[2].UUID16bits[1] = 0x18; //
-	services[3].handle[0] = 0x0E; 
-	services[3].handle[1] = 0x00; 
-	services[3].endGroupHandle[0] = 0xFF; 
-	services[3].endGroupHandle[1] = 0xFF; 
+	services[3].handle[0] = 0x0E;
+	services[3].handle[1] = 0x00;
+	services[3].endGroupHandle[0] = 0xFF;
+	services[3].endGroupHandle[1] = 0xFF;
 	services[3].UUID16bits[0] = 0x12; // Human Interface Device
 	services[3].UUID16bits[1] = 0x18; //
 
-	AttributeData* informations = (AttributeData*)malloc(2 * sizeof(AttributeData));
-	informations[0].handle[0] = 0x13; 
-	informations[0].handle[1] = 0x00; 
+	informations[0].handle[0] = 0x13;
+	informations[0].handle[1] = 0x00;
 	informations[0].UUID16bits[0] = 0x02; // Client Characteristic Configuration
 	informations[0].UUID16bits[1] = 0x29; //
-	informations[1].handle[0] = 0x14; 
-	informations[1].handle[1] = 0x00; 
+	informations[1].handle[0] = 0x14;
+	informations[1].handle[1] = 0x00;
 	informations[1].UUID16bits[0] = 0x08; // Report Reference
 	informations[1].UUID16bits[1] = 0x29; //
 
-	int reportMapIdx = 0;
-	BYTE* reportMap = (BYTE*)malloc(106);
 	reportMap[0] = 0x05; // Usage Page (Generic Desktop Ctrls)
 	reportMap[1] = 0x01; // 
 	reportMap[2] = 0x09; // Usage (Mouse)
@@ -751,7 +857,6 @@ int main()
 	reportMap[104] = 0xC0; //   End Collection
 	reportMap[105] = 0xC0; // End Collection
 
-	MouseData* mouseData = (MouseData*)malloc(88 * sizeof(MouseData));
 	ZeroMemory(mouseData, 88 * sizeof(MouseData));
 	mouseData[0].xlsb = 0x01;
 	mouseData[0].ylsb = 0x01;
@@ -963,6 +1068,45 @@ int main()
 	mouseData[86].ylsb = 0x01;
 	mouseData[87].xlsb = 0x01;
 	mouseData[87].ylsb = 0x01;
+}
+
+int main()
+{
+	BYTE* cmd_inputBuffer;
+	BYTE* cmd_outputBuffer;
+	BOOL success;
+	DWORD returned;
+	HANDLE hciControlDeviceCmd;
+	HANDLE hThreadEvent;
+	HANDLE hThreadAclData;
+	int i;
+	int result = EXIT_FAILURE;
+	BOOL startedSendingReportMap = FALSE;
+	DWORD nbIterationWoAclRequest = 0;
+	int mouseDataIdx;
+
+	pAttributeRequested = (AttributeRequested*)malloc(sizeof(AttributeRequested));
+	pAttributeRequested->opcode = 0x00;
+	aclData[0] = (BYTE*)malloc(1024);
+	aclData[1] = (BYTE*)malloc(1024);
+	attMsgReceived = (BYTE*)malloc(1024);
+	sigMsgReceived = (BYTE*)malloc(1024);
+	secMsgReceived = (BYTE*)malloc(1024);
+	attMsgReceived[0] = 0x00; // No message stored
+	sigMsgReceived[0] = 0x00; // No message stored
+	secMsgReceived[0] = 0x00; // No message stored
+
+	AttributeData* characteristics = (AttributeData*)malloc(11 * sizeof(AttributeData));
+	AttributeData* services = (AttributeData*)malloc(4 * sizeof(AttributeData));
+	AttributeData* informations = (AttributeData*)malloc(2 * sizeof(AttributeData));
+	
+	int reportMapIdx = 0;
+	BYTE* reportMap = (BYTE*)malloc(106);
+	
+	MouseData* mouseData = (MouseData*)malloc(88 * sizeof(MouseData));
+
+	initData(characteristics, services, informations, reportMap, mouseData);
+
 
 	mainLoop_continue = TRUE;
 	SetConsoleCtrlHandler(consoleHandler, TRUE);
@@ -983,30 +1127,6 @@ int main()
 	cmd_inputBuffer = (BYTE*)malloc(1024);
 	cmd_outputBuffer = (BYTE*)malloc(1024);
 	readLoop_continue = TRUE;
-	i = 0;
-	n = 0;
-
-	// Lumia520
-	bluetoothDevice = CreateFileA("\\??\\SystemBusQc#SMD_BT#4&315a27b&0&4097#{0850302a-b344-4fda-9be9-90576b8d46f0}", GENERIC_WRITE, FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
-	if (bluetoothDevice == INVALID_HANDLE_VALUE)
-	{
-		printf("Failed to open bluetooth device! 0x%08X\n", GetLastError());
-		return EXIT_FAILURE;
-	}
-
-	printf("Query local bluetooth device information...\n");
-	success = DeviceIoControl(bluetoothDevice, IOCTL_BTH_GET_LOCAL_INFO, cmd_inputBuffer, 1024, cmd_outputBuffer, 1024, &returned, NULL);
-	if (!success)
-	{
-		printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
-	}
-	else
-	{
-		printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'b');
-		storeRespondingDeviceInformation(cmd_outputBuffer);
-	}
-
-	CloseHandle(bluetoothDevice);
 
 	hciControlDeviceCmd = CreateFileA("\\\\.\\wp81controldevice", GENERIC_WRITE, FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
 	if (hciControlDeviceCmd == INVALID_HANDLE_VALUE)
@@ -1053,7 +1173,7 @@ int main()
 	cmd_inputBuffer[i++] = 0x00;
 	cmd_inputBuffer[i++] = 0x01; // Command
 	cmd_inputBuffer[i++] = 0x03; // OGF 0x03, OCF 0x0003
-	cmd_inputBuffer[i++] = 0x0C; // // The OGF occupies the upper 6 bits of the Opcode, while the OCF occupies the remaining 10 bits.
+	cmd_inputBuffer[i++] = 0x0C; // The OGF occupies the upper 6 bits of the Opcode, while the OCF occupies the remaining 10 bits.
 	cmd_inputBuffer[i++] = 0x00; // Parameter Total Length
 	printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
 	ResetEvent(hEventCmdFinished);
@@ -1071,6 +1191,30 @@ int main()
 
 	printf("Waiting for the end of the Reset command...\n");
 	WaitForSingleObject(hEventCmdFinished, 1000);
+
+	printf("Sending Read BD_ADDR Command...\n");
+	i = 0;
+	cmd_inputBuffer[i++] = 0x03; // Length of the IOCTL message
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x01; // Command
+	cmd_inputBuffer[i++] = 0x09; // OGF 0x04, OCF 0x0009
+	cmd_inputBuffer[i++] = 0x10; //
+	cmd_inputBuffer[i++] = 0x00; // Parameter Total Length
+	printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
+	ResetEvent(hEventCmdFinished);
+	success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
+	if (!success)
+	{
+		printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+		goto exit;
+	}
+	else
+	{
+		printf("Read BD_ADDR Command sent.\n");
+		printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
+	}
 
 	printf("Sending LE Set Advertising Parameters Command...\n");
 	i = 0;
@@ -1218,22 +1362,19 @@ int main()
 	WaitForSingleObject(hEventCmdFinished, 1000);
 
 	printf("Long wait for the Pairing Request...\n");
-	if (WaitForSingleObject(hEventAclDataReceived, 20000) != WAIT_OBJECT_0)
+	do
 	{
-		goto exit;
-	}
-	parseAclData();
+		if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
+		{
+			parseAclData();
+		}
 
-	printf("Short wait for an optional Exchange MTU Request...\n");
-	if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
-	{
-		parseAclData();
-	}
-	else
-	{
-		ResetEvent(hEventAclDataReceived);
-		printf("No Exchange MTU Request received.\n");
-	}
+		if (FALSE == mainLoop_continue)
+		{
+			goto exit;
+		}
+
+	} while (FALSE == isPairingRequestReceived());
 
 	printf("Sending Pairing Response...\n");
 	i = 0;
@@ -1276,7 +1417,8 @@ int main()
 		0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA,
 		0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA
 	};
-
+	
+	// Some information of the Connection Complete Event are mandatory to compute the Pairing Confirm 
 	printf("Waiting for the Connection Complete...\n");
 	if (WaitForSingleObject(hEventConnCmpltReceived, 1000) != WAIT_OBJECT_0)
 	{
@@ -1284,11 +1426,19 @@ int main()
 	}
 
 	printf("Waiting for the Pairing Confirm...\n");
-	if (WaitForSingleObject(hEventAclDataReceived, 2000) != WAIT_OBJECT_0)
+	do
 	{
-		goto exit;
-	}
-	parseAclData();
+		if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
+		{
+			parseAclData();
+		}
+
+		if (FALSE == mainLoop_continue)
+		{
+			goto exit;
+		}
+
+	} while (FALSE == isPairingConfirmReceived());
 
 	printf("Computing pairing confirm...\n");
 	BYTE confirmValue[16];
@@ -1348,11 +1498,19 @@ int main()
 
 
 	printf("Waiting for the Pairing Random...\n");
-	if (WaitForSingleObject(hEventAclDataReceived, 2000) != WAIT_OBJECT_0)
+	do
 	{
-		goto exit;
-	}
-	parseAclData();
+		if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
+		{
+			parseAclData();
+		}
+
+		if (FALSE == mainLoop_continue)
+		{
+			goto exit;
+		}
+
+	} while (FALSE == isPairingRandomReceived());
 
 	printf("Sending Pairing Random...\n");
 	i = 0; 
@@ -1559,54 +1717,93 @@ int main()
 		printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 	}
 
-	printf("Was an Exchange MTU Request received ?\n");
-	if (isXchgMTURqstReceived == TRUE)
+	printf("Waiting for the Signing Information...\n");
+	do
 	{
-		printf("Yes, sending Exchange MTU Response...\n");
-		i = 0;
-		cmd_inputBuffer[i++] = 0x0B; // Length of the IOCTL message
-		cmd_inputBuffer[i++] = 0x00;
-		cmd_inputBuffer[i++] = 0x00;
-		cmd_inputBuffer[i++] = 0x00;
-		cmd_inputBuffer[i++] = 0x02; // ACL data
-		cmd_inputBuffer[i++] = connectionHandle[0];
-		cmd_inputBuffer[i++] = connectionHandle[1];
-		cmd_inputBuffer[i++] = 0x07; // Length of the ACL message
-		cmd_inputBuffer[i++] = 0x00; // 
-		cmd_inputBuffer[i++] = 0x03; // Length of the L2CAP message
-		cmd_inputBuffer[i++] = 0x00; //
-		cmd_inputBuffer[i++] = 0x04; // Attribute Protocol
-		cmd_inputBuffer[i++] = 0x00; //
-		cmd_inputBuffer[i++] = 0x03; // Exchange MTU Response
-		cmd_inputBuffer[i++] = mtu[0]; // MTU value
-		cmd_inputBuffer[i++] = mtu[1]; //
-		printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
-		success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
-		if (!success)
+		if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
 		{
-			printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+			parseAclData();
+		}
+
+		if (FALSE == mainLoop_continue)
+		{
 			goto exit;
 		}
-		else
-		{
-			printf("Exchange MTU Response sent.\n");
-			printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
-		}
-	}
-	else
+
+	} while (FALSE == isSigningInformationReceived());
+
+
+	printf("Waiting for the optional Exchange MTU Request ...\n");
+	i = 0;
+	do
 	{
-		printf("No Exchange MTU Request received.\n");
-	}
+		if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
+		{
+			parseAclData();
+		}
+
+		if (isExchangeMTURequestReceived())
+		{
+			printf("Sending Exchange MTU Response...\n");
+			i = 0;
+			cmd_inputBuffer[i++] = 0x0B; // Length of the IOCTL message
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x02; // ACL data
+			cmd_inputBuffer[i++] = connectionHandle[0];
+			cmd_inputBuffer[i++] = connectionHandle[1];
+			cmd_inputBuffer[i++] = 0x07; // Length of the ACL message
+			cmd_inputBuffer[i++] = 0x00; // 
+			cmd_inputBuffer[i++] = 0x03; // Length of the L2CAP message
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x04; // Attribute Protocol
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x03; // Exchange MTU Response
+			cmd_inputBuffer[i++] = mtu[0]; // MTU value
+			cmd_inputBuffer[i++] = mtu[1]; //
+			printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
+			success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
+			if (!success)
+			{
+				printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+				goto exit;
+			}
+			else
+			{
+				printf("Exchange MTU Response sent.\n");
+				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
+			}
+			break;
+		}
+
+		if (FALSE == mainLoop_continue)
+		{
+			goto exit;
+		}
+
+	} while (i++ < 2);
 
 	sendConnectionParameterUpdateRequest(hciControlDeviceCmd, cmd_inputBuffer, cmd_outputBuffer);
+	printf("Waiting for the Connection Parameter Update Response...\n");
+	do
+	{
+		if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
+		{
+			parseAclData();
+		}
+
+		if (FALSE == mainLoop_continue)
+		{
+			goto exit;
+		}
+
+	} while (FALSE == isConnectionParameterUpdateResponseReceived());
 
 	printf("Main loop...\n");
 	while (mainLoop_continue)
 	{
-		if (pAttributeRequested->opcode == 0x08		// Read By Type Request
-			&& pAttributeRequested->uuid[0] == 0x03	// GATT Characteristic Declaration
-			&& pAttributeRequested->uuid[1] == 0x28   //
-			&& isAttributeInRange(characteristics, 11))
+		if (isReadByTypeRequestReceivedAndAttributeFound(0x03, 0x28, characteristics, 11)) // GATT Characteristic Declaration
 		{
 			printf("Sending Read By Type Response for GATT Characteristic Declaration...\n");
 			i = 0;
@@ -1629,10 +1826,10 @@ int main()
 			int startMTU = i;
 			for (int charIdx = 0; charIdx < 11; charIdx++)
 			{
-				if (characteristics[charIdx].handle[0] >= pAttributeRequested->startingHandle[0]
-					&& characteristics[charIdx].handle[1] >= pAttributeRequested->startingHandle[1]
-					&& characteristics[charIdx].handle[0] <= pAttributeRequested->endingHandle[0]
-					&& characteristics[charIdx].handle[1] <= pAttributeRequested->endingHandle[1]
+				if (characteristics[charIdx].handle[0] >= attMsgReceived[14]	// startingHandle0
+					&& characteristics[charIdx].handle[1] >= attMsgReceived[15]	// startingHandle1
+					&& characteristics[charIdx].handle[0] <= attMsgReceived[16]	// endingHandle0
+					&& characteristics[charIdx].handle[1] <= attMsgReceived[17]	// endingHandle1
 					&& i - startMTU < 23 - 7) // Do we still have enough place for a new attribute value ?
 				{
 					cmd_inputBuffer[i++] = characteristics[charIdx].handle[0];
@@ -2446,6 +2643,9 @@ exit:
 	free(pAttributeRequested);
 	free(aclData[0]);
 	free(aclData[1]);
+	free(attMsgReceived);
+	free(sigMsgReceived);
+	free(secMsgReceived);
 	free(characteristics);
 	free(services);
 	free(informations);
