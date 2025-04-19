@@ -15,7 +15,7 @@ LE Legacy Pairing:
 |:-:|-:|:-:|:-|:-|
 |1| | <- | Pairing Request | |
 |2| Pairing Response | -> | | |
-|3| | <- | Pairing Confirm | _Computed with a random value and information coming from the Pairing Request/Response_ |
+|3| | <- | Pairing Confirm | _Computed with a random value and information coming from the Pairing Request/Response and from the connection_ |
 |4| Pairing Confirm | -> | | |
 |5| | <- | Pairing Random | _Random value used to compute the Pairing Confirm_ |
 |6| Pairing Random | -> | | |
