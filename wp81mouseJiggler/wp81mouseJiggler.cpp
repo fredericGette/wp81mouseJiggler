@@ -3,15 +3,6 @@
 
 #include "stdafx.h"
 
-typedef struct _AttributeRequested {
-	BYTE opcode;
-	BYTE startingHandle[2];
-	BYTE endingHandle[2];
-	BYTE uuid[2];
-	BYTE value[2];
-	BYTE valueOffset[2];
-} AttributeRequested;
-
 typedef struct _AttributeData {
 	BYTE handle[2];
 	BYTE endGroupHandle[2];
@@ -43,7 +34,6 @@ static BYTE rat = 0x00; // Responding device address type = public
 static BYTE ra[6]; // Responding device address 
 static BYTE mRand[16]; // Pairing random send by the initiator/master device (MSB first)
 static BYTE mtu[2] = {23,0}; // MTU common to initiating and responding device (default minimum = 23 bytes)
-static AttributeRequested* pAttributeRequested;
 static BYTE* aclData[2];
 static int activeAclData;
 static int passiveAclData;
@@ -104,6 +94,11 @@ BOOL WINAPI consoleHandler(DWORD signal)
 		// Pass signal on to the next handler.
 		return FALSE;
 	}
+}
+
+void storeConnectionHandleFromEvt(BYTE* evtMsgReceived)
+{
+	memcpy(connectionHandle, evtMsgReceived + 8, 2);
 }
 
 void storeInitiatingDeviceInformation(BYTE* evtConCompltMsgReceived)
@@ -179,6 +174,7 @@ DWORD WINAPI readEvents(void* notUsed)
 			else if (returned == 20 && readEvent_outputBuffer[5] == 0x3E && readEvent_outputBuffer[7] == 0x05)
 			{
 				printf("Received: LTK Request.\n");
+				storeConnectionHandleFromEvt(readEvent_outputBuffer);
 				SetEvent(hEventLTKRqstReceived);
 			}
 		}
@@ -195,7 +191,7 @@ DWORD WINAPI readEvents(void* notUsed)
 	return 0;
 }
 
-void storeConnectionHandle(BYTE* aclMsgReceived)
+void storeConnectionHandleFromAcl(BYTE* aclMsgReceived)
 {
 	memcpy(connectionHandle, aclMsgReceived + 5, 2);
 }
@@ -230,69 +226,6 @@ void storeMTUReceived(BYTE* exchangeMTURequestReceived)
 	mtu[1] = exchangeMTURequestReceived[15];
 }
 
-// Read By Type Request
-// Read By Group Type Request
-void storeReadAttributeRequest(BYTE* readAttributeRequestReceived)
-{
-	pAttributeRequested->opcode = readAttributeRequestReceived[13];
-	pAttributeRequested->startingHandle[0] = readAttributeRequestReceived[14];
-	pAttributeRequested->startingHandle[1] = readAttributeRequestReceived[15];
-	pAttributeRequested->endingHandle[0] = readAttributeRequestReceived[16];
-	pAttributeRequested->endingHandle[1] = readAttributeRequestReceived[17];
-	pAttributeRequested->uuid[0] = readAttributeRequestReceived[18];
-	pAttributeRequested->uuid[1] = readAttributeRequestReceived[19];
-}
-
-// Find By Type Value Request
-void storeFindAttributeRequest(BYTE* findAttributeRequestReceived)
-{
-	pAttributeRequested->opcode = findAttributeRequestReceived[13];
-	pAttributeRequested->startingHandle[0] = findAttributeRequestReceived[14];
-	pAttributeRequested->startingHandle[1] = findAttributeRequestReceived[15];
-	pAttributeRequested->endingHandle[0] = findAttributeRequestReceived[16];
-	pAttributeRequested->endingHandle[1] = findAttributeRequestReceived[17];
-	pAttributeRequested->uuid[0] = findAttributeRequestReceived[18];
-	pAttributeRequested->uuid[1] = findAttributeRequestReceived[19];
-	pAttributeRequested->value[0] = findAttributeRequestReceived[20];
-	pAttributeRequested->value[1] = findAttributeRequestReceived[21];
-}
-
-// Find Information Request
-void storeFindInformationRequest(BYTE* findInfoRequestReceived)
-{
-	pAttributeRequested->opcode = findInfoRequestReceived[13];
-	pAttributeRequested->startingHandle[0] = findInfoRequestReceived[14];
-	pAttributeRequested->startingHandle[1] = findInfoRequestReceived[15];
-	pAttributeRequested->endingHandle[0] = findInfoRequestReceived[16];
-	pAttributeRequested->endingHandle[1] = findInfoRequestReceived[17];
-}
-
-// Read Request
-void storeReadRequest(BYTE* readRequestReceived)
-{
-	pAttributeRequested->opcode = readRequestReceived[13];
-	pAttributeRequested->startingHandle[0] = readRequestReceived[14];
-	pAttributeRequested->startingHandle[1] = readRequestReceived[15];
-}
-
-// Read Blob Request
-void storeReadBlobRequest(BYTE* readRequestReceived)
-{
-	pAttributeRequested->opcode = readRequestReceived[13];
-	pAttributeRequested->startingHandle[0] = readRequestReceived[14];
-	pAttributeRequested->startingHandle[1] = readRequestReceived[15];
-	pAttributeRequested->valueOffset[0] = readRequestReceived[16];
-	pAttributeRequested->valueOffset[1] = readRequestReceived[17];
-}
-
-// Write Request
-void storeWriteRequest(BYTE* writeRequestReceived)
-{
-	pAttributeRequested->opcode = writeRequestReceived[13];
-	pAttributeRequested->startingHandle[0] = writeRequestReceived[14];
-	pAttributeRequested->startingHandle[1] = writeRequestReceived[15];
-}
-
 BOOL isExchangeMTURequestReceived()
 {
 	if (attMsgReceived[0] == 0x0B
@@ -311,24 +244,34 @@ BOOL isReadByTypeRequestReceived()
 	return FALSE;
 }
 
-BOOL isReadByTypeRequestReceivedAndAttributeFound(BYTE uuid0, BYTE uuid1, AttributeData* attributes, int nbAttributes)
+BOOL isReadByTypeRequestReceived(BYTE uuid0, BYTE uuid1)
 {
 	if (isReadByTypeRequestReceived())
 	{
 		if (attMsgReceived[18] == uuid0 && attMsgReceived[19] == uuid1)
 		{
-			for (int idx = 0; idx < nbAttributes; idx++)
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+BOOL isReadByTypeRequestReceivedAndAttributeFound(BYTE uuid0, BYTE uuid1, AttributeData* attributes, int nbAttributes)
+{
+	if (isReadByTypeRequestReceived(uuid0, uuid1))
+	{
+		for (int idx = 0; idx < nbAttributes; idx++)
+		{
+			if (attributes[idx].handle[0] >= attMsgReceived[14]		// startingHandle0
+				&& attributes[idx].handle[1] >= attMsgReceived[15]	// startingHandle1
+				&& attributes[idx].handle[0] <= attMsgReceived[16]	// endingHandle0
+				&& attributes[idx].handle[1] <= attMsgReceived[17])	// endingHandle1
 			{
-				if (attributes[idx].handle[0] >= attMsgReceived[14]		// startingHandle0
-					&& attributes[idx].handle[1] >= attMsgReceived[15]	// startingHandle1
-					&& attributes[idx].handle[0] <= attMsgReceived[16]	// endingHandle0
-					&& attributes[idx].handle[1] <= attMsgReceived[17])	// endingHandle1
-				{
-					return TRUE;
-					break;
-				}
+				return TRUE;
+				break;
 			}
-		}	
+		}
 	}
 		
 	return FALSE;
@@ -343,12 +286,52 @@ BOOL isReadByGroupTypeRequestReceived()
 	return FALSE;
 }
 
+BOOL isReadByGroupTypeRequestReceivedAndAttributeFound(BYTE uuid0, BYTE uuid1, AttributeData* attributes, int nbAttributes)
+{
+	if (isReadByGroupTypeRequestReceived())
+	{
+		if (attMsgReceived[18] == uuid0 && attMsgReceived[19] == uuid1)
+		{
+			for (int idx = 0; idx < nbAttributes; idx++)
+			{
+				if (attributes[idx].handle[0] >= attMsgReceived[14]		// startingHandle0
+					&& attributes[idx].handle[1] >= attMsgReceived[15]	// startingHandle1
+					&& attributes[idx].handle[0] <= attMsgReceived[16]	// endingHandle0
+					&& attributes[idx].handle[1] <= attMsgReceived[17])	// endingHandle1
+				{
+					return TRUE;
+					break;
+				}
+			}
+		}
+	}
+	return FALSE;
+}
+
 BOOL isFindByTypeValueRequestReceived()
 {
 	if (attMsgReceived[0] == 0x11
 		&& attMsgReceived[13] == 0x06 // Find By Type Value Request
 		)
 		return TRUE;
+	return FALSE;
+}
+
+BOOL isFindByTypeValueRequestReceived(BYTE uuid0, BYTE uuid1, BYTE value0, BYTE value1, BYTE maxStartingHandle0, BYTE maxStartingHandle1, BYTE minEndingHandle0, BYTE minEndingHandle1)
+{
+	if (isFindByTypeValueRequestReceived())
+	{
+		if (attMsgReceived[18] == uuid0 && attMsgReceived[19] == uuid1
+			&& attMsgReceived[20] == value0 && attMsgReceived[21] == value1)
+		{
+			if (attMsgReceived[14] <= maxStartingHandle0 // startingHandle
+				&& attMsgReceived[15] == maxStartingHandle1
+				&& attMsgReceived[16] >= minEndingHandle0 // endingHandle
+				&& attMsgReceived[17] >= minEndingHandle1)
+			return TRUE;
+		}
+	}
+
 	return FALSE;
 }
 
@@ -361,6 +344,25 @@ BOOL isFindInformationRequestReceived()
 	return FALSE;
 }
 
+BOOL isFindInformationRequestReceivedAndAttributeFound(AttributeData* attributes, int nbAttributes)
+{
+	if (isFindInformationRequestReceived())
+	{
+		for (int idx = 0; idx < nbAttributes; idx++)
+		{
+			if (attributes[idx].handle[0] >= attMsgReceived[14]		// startingHandle0
+				&& attributes[idx].handle[1] >= attMsgReceived[15]	// startingHandle1
+				&& attributes[idx].handle[0] <= attMsgReceived[16]	// endingHandle0
+				&& attributes[idx].handle[1] <= attMsgReceived[17])	// endingHandle1
+			{
+				return TRUE;
+				break;
+			}
+		}
+	}
+	return FALSE;
+}
+
 BOOL isReadRequestReceived()
 {
 	if (attMsgReceived[0] == 0x0B
@@ -370,12 +372,39 @@ BOOL isReadRequestReceived()
 	return FALSE;
 }
 
+BOOL isReadRequestReceived(BYTE startingHandle0, BYTE startingHandle1)
+{
+	if (isReadRequestReceived())
+	{
+		if (attMsgReceived[14] == startingHandle0
+			&& attMsgReceived[15] == startingHandle1)
+		{
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
+
 BOOL isReadBlobRequestReceived()
 {
 	if (attMsgReceived[0] == 0x0D
 		&& attMsgReceived[13] == 0x0C // Read Blob Request
 		)
 		return TRUE;
+	return FALSE;
+}
+
+BOOL isReadBlobRequestReceived(BYTE startingHandle0, BYTE startingHandle1)
+{
+	if (isReadBlobRequestReceived())
+	{
+		if (attMsgReceived[14] == startingHandle0
+			&& attMsgReceived[15] == startingHandle1)
+		{
+			return TRUE;
+		}
+	}
 	return FALSE;
 }
 
@@ -456,37 +485,30 @@ void parseAclData()
 			else if (isReadByTypeRequestReceived())
 			{
 				printf("Received: Read By Type Request (2 bytes UUID).\n");
-				storeReadAttributeRequest(readAcl_outputBuffer);
 			}
 			else if (isReadByGroupTypeRequestReceived())
 			{
 				printf("Received: Read By Group Type Request (2 bytes UUID).\n");
-				storeReadAttributeRequest(readAcl_outputBuffer);
 			}
 			else if (isFindByTypeValueRequestReceived())
 			{
 				printf("Received: Find By Type Value Request.\n");
-				storeFindAttributeRequest(readAcl_outputBuffer);
 			}
 			else if (isFindInformationRequestReceived())
 			{
 				printf("Received: Find Information Request.\n");
-				storeFindInformationRequest(readAcl_outputBuffer);
 			}
 			else if (isReadRequestReceived())
 			{
 				printf("Received: Read Request.\n");
-				storeReadRequest(readAcl_outputBuffer);
 			}
 			else if (isReadBlobRequestReceived())
 			{
 				printf("Received: Read Blob Request.\n");
-				storeReadBlobRequest(readAcl_outputBuffer);
 			}
 			else if (isWriteRequestReceived())
 			{
 				printf("Received: Write Request.\n");
-				storeWriteRequest(readAcl_outputBuffer);
 			}
 			break;
 		case 0x05: // Signaling Protocol
@@ -501,7 +523,7 @@ void parseAclData()
 			if (isPairingRequestReceived())
 			{
 				printf("Received: Pairing Request.\n");
-				storeConnectionHandle(readAcl_outputBuffer);
+				storeConnectionHandleFromAcl(readAcl_outputBuffer);
 				storePairingRequest(readAcl_outputBuffer);
 			}
 			else if (isPairingConfirmReceived())
@@ -566,25 +588,6 @@ DWORD WINAPI readAclData(void* notUsed)
 	CloseHandle(hciControlDeviceAcl);
 
 	return 0;
-}
-
-BOOL isAttributeInRange(AttributeData* attributes, int length)
-{
-	BOOL found = FALSE;
-
-	for (int idx = 0; idx < length; idx++)
-	{
-		if (attributes[idx].handle[0] >= pAttributeRequested->startingHandle[0]
-			&& attributes[idx].handle[1] >= pAttributeRequested->startingHandle[1]
-			&& attributes[idx].handle[0] <= pAttributeRequested->endingHandle[0]
-			&& attributes[idx].handle[1] <= pAttributeRequested->endingHandle[1])
-		{
-			found = TRUE;
-			break;
-		}
-	}
-
-	return found;
 }
 
 int sendConnectionParameterUpdateRequest(HANDLE hciControlDeviceCmd, BYTE* cmd_inputBuffer, BYTE* cmd_outputBuffer)
@@ -1070,6 +1073,354 @@ void initData(AttributeData* characteristics, AttributeData* services, Attribute
 	mouseData[87].ylsb = 0x01;
 }
 
+void waitForMessage(BOOL(*isMessageReceived)())
+{
+	do
+	{
+		if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
+		{
+			parseAclData();
+		}
+
+		if (FALSE == mainLoop_continue)
+		{
+			break;
+		}
+
+	} while (FALSE == isMessageReceived());
+	// Wait again in case a second message is received at the same time
+	if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
+	{
+		parseAclData();
+	}
+}
+
+int pairing(HANDLE hciControlDeviceCmd, BYTE* cmd_inputBuffer, BYTE* cmd_outputBuffer, BYTE *ltkValue)
+{
+	BOOL success;
+	DWORD returned;
+	int i;
+
+	printf("Sending Pairing Response...\n");
+	i = 0;
+	cmd_inputBuffer[i++] = 0x0F; // Length of the IOCTL message
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x02; // ACL data
+	cmd_inputBuffer[i++] = connectionHandle[0];
+	cmd_inputBuffer[i++] = connectionHandle[1];
+	cmd_inputBuffer[i++] = 0x0B; // Length of the ACL message
+	cmd_inputBuffer[i++] = 0x00; // 
+	cmd_inputBuffer[i++] = 0x07; // Length of the L2CAP message
+	cmd_inputBuffer[i++] = 0x00; //
+	cmd_inputBuffer[i++] = 0x06; // Security Manager Protocol
+	cmd_inputBuffer[i++] = 0x00; //
+	cmd_inputBuffer[i++] = 0x02; // Pairing Response
+	cmd_inputBuffer[i++] = 0x03; // IO Capability: No Input, No Output
+	cmd_inputBuffer[i++] = 0x00; // OOB Data Flags: OOB Auth. Data Not Present
+	cmd_inputBuffer[i++] = 0x01; // AuthReq: 0x01, Bonding Flags: Bonding
+	cmd_inputBuffer[i++] = 0x10; // Max Encryption Key Size
+	cmd_inputBuffer[i++] = 0x04; // Initiator Key Distribution: Signature Key (CSRK)
+	cmd_inputBuffer[i++] = 0x01; // Responder Key Distribution: Encryption Key (LTK)
+	printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
+	success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
+	if (!success)
+	{
+		printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+		return EXIT_FAILURE;
+	}
+	else
+	{
+		printf("Pairing Response sent.\n");
+		printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
+		storePairingResponse(cmd_inputBuffer);
+	}
+
+	// Our(slave) "random" value (TODO: we can generate a new random value each time)
+	BYTE sRand[] = {
+		0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA,
+		0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA
+	};
+
+	// Some information of the Connection Complete Event are mandatory to compute the Pairing Confirm 
+	printf("Waiting for the Connection Complete...\n");
+	if (WaitForSingleObject(hEventConnCmpltReceived, 1000) != WAIT_OBJECT_0)
+	{
+		return EXIT_FAILURE;
+	}
+
+	printf("Waiting for the Pairing Confirm...\n");
+	waitForMessage(isPairingConfirmReceived);
+	if (FALSE == mainLoop_continue) return EXIT_FAILURE;
+
+	printf("Computing pairing confirm...\n");
+	BYTE confirmValue[16];
+	computeConfirmValue(sRand, pairingRequest, pairingResponse, iat, ia, rat, ra, confirmValue);
+	//printBuffer2HexString(sRand, 16, FALSE, 'r');
+	//printBuffer2HexString(pairingRequest, 7, FALSE, 'p');
+	//printBuffer2HexString(pairingResponse, 7, FALSE, 'p');
+	//printBuffer2HexString(ia, 6, FALSE, 'i');
+	//printBuffer2HexString(ra, 6, FALSE, 'r');
+	//printBuffer2HexString(confirmValue, 16, FALSE, 'v');
+	printf("Pairing confirm computed.\n");
+
+	printf("Sending Pairing Confirm...\n");
+	i = 0;
+	cmd_inputBuffer[i++] = 0x19; // Length of the IOCTL message
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x02; // ACL data
+	cmd_inputBuffer[i++] = connectionHandle[0];
+	cmd_inputBuffer[i++] = connectionHandle[1];
+	cmd_inputBuffer[i++] = 0x15; // Length of the ACL message
+	cmd_inputBuffer[i++] = 0x00; // 
+	cmd_inputBuffer[i++] = 0x11; // Length of the L2CAP message
+	cmd_inputBuffer[i++] = 0x00; //
+	cmd_inputBuffer[i++] = 0x06; // Security Manager Protocol
+	cmd_inputBuffer[i++] = 0x00; //
+	cmd_inputBuffer[i++] = 0x03; // Pairing Confirm
+	cmd_inputBuffer[i++] = confirmValue[15]; // Confirm value
+	cmd_inputBuffer[i++] = confirmValue[14]; //
+	cmd_inputBuffer[i++] = confirmValue[13]; //
+	cmd_inputBuffer[i++] = confirmValue[12]; //
+	cmd_inputBuffer[i++] = confirmValue[11]; //
+	cmd_inputBuffer[i++] = confirmValue[10]; //
+	cmd_inputBuffer[i++] = confirmValue[9]; //
+	cmd_inputBuffer[i++] = confirmValue[8]; //
+	cmd_inputBuffer[i++] = confirmValue[7]; //
+	cmd_inputBuffer[i++] = confirmValue[6]; //
+	cmd_inputBuffer[i++] = confirmValue[5]; //
+	cmd_inputBuffer[i++] = confirmValue[4]; //
+	cmd_inputBuffer[i++] = confirmValue[3]; //
+	cmd_inputBuffer[i++] = confirmValue[2]; //
+	cmd_inputBuffer[i++] = confirmValue[1]; //
+	cmd_inputBuffer[i++] = confirmValue[0]; //
+	printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
+	success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
+	if (!success)
+	{
+		printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+		return EXIT_FAILURE;
+	}
+	else
+	{
+		printf("Pairing Confirm sent.\n");
+		printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
+	}
+
+
+	printf("Waiting for the Pairing Random...\n");
+	waitForMessage(isPairingRandomReceived);
+	if (FALSE == mainLoop_continue) return EXIT_FAILURE;
+
+	printf("Sending Pairing Random...\n");
+	i = 0;
+	cmd_inputBuffer[i++] = 0x19; // Length of the IOCTL message
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x02; // ACL data
+	cmd_inputBuffer[i++] = connectionHandle[0];
+	cmd_inputBuffer[i++] = connectionHandle[1];
+	cmd_inputBuffer[i++] = 0x15; // Length of the ACL message
+	cmd_inputBuffer[i++] = 0x00; // 
+	cmd_inputBuffer[i++] = 0x11; // Length of the L2CAP message
+	cmd_inputBuffer[i++] = 0x00; //
+	cmd_inputBuffer[i++] = 0x06; // Security Manager Protocol
+	cmd_inputBuffer[i++] = 0x00; //
+	cmd_inputBuffer[i++] = 0x04; // Pairing Random
+	cmd_inputBuffer[i++] = sRand[15]; // Random value
+	cmd_inputBuffer[i++] = sRand[14]; //
+	cmd_inputBuffer[i++] = sRand[13]; //
+	cmd_inputBuffer[i++] = sRand[12]; //
+	cmd_inputBuffer[i++] = sRand[11]; //
+	cmd_inputBuffer[i++] = sRand[10]; //
+	cmd_inputBuffer[i++] = sRand[9]; //
+	cmd_inputBuffer[i++] = sRand[8]; //
+	cmd_inputBuffer[i++] = sRand[7]; //
+	cmd_inputBuffer[i++] = sRand[6]; //
+	cmd_inputBuffer[i++] = sRand[5]; //
+	cmd_inputBuffer[i++] = sRand[4]; //
+	cmd_inputBuffer[i++] = sRand[3]; //
+	cmd_inputBuffer[i++] = sRand[2]; //
+	cmd_inputBuffer[i++] = sRand[1]; //
+	cmd_inputBuffer[i++] = sRand[0]; //
+	printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
+	success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
+	if (!success)
+	{
+		printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+		return EXIT_FAILURE;
+	}
+	else
+	{
+		printf("Pairing Random sent.\n");
+		printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
+	}
+
+	// Our EDIV (Encrypted Diversifier) value (TODO: we can generate a new random value each time)
+	BYTE edivValue[] = {
+		0xA0, 0xB0
+	};
+
+	// Our "random" value (TODO: we can generate a new random value each time)
+	BYTE randomValue[] = {
+		0XCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA
+	};
+
+	printf("Waiting for the LTK Request...\n");
+	if (WaitForSingleObject(hEventLTKRqstReceived, 1000) != WAIT_OBJECT_0)
+	{
+		return EXIT_FAILURE;
+	}
+
+	printf("Computing STK...\n");
+	BYTE stkValue[16];
+	//printBuffer2HexString(sRand, 16, FALSE, 's');
+	//printBuffer2HexString(mRand, 16, FALSE, 'm');
+	computeStk(sRand, mRand, stkValue);
+	//printBuffer2HexString(stkValue, 16, FALSE, 'k');
+	printf("STK computed.\n");
+
+	printf("Sending LTK Request Reply command...\n");
+	i = 0;
+	cmd_inputBuffer[i++] = 0x15; // Length of the IOCTL message
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x01; // Command
+	cmd_inputBuffer[i++] = 0x1A; // OGF 0x08, OCF 0x001A
+	cmd_inputBuffer[i++] = 0x20; // 
+	cmd_inputBuffer[i++] = 0x12; // Parameter Total Length
+	cmd_inputBuffer[i++] = connectionHandle[0];
+	cmd_inputBuffer[i++] = connectionHandle[1];
+	cmd_inputBuffer[i++] = stkValue[15]; // Long Term Key (in fact the Short Term Key because we were not bond with the master device before)
+	cmd_inputBuffer[i++] = stkValue[14]; //
+	cmd_inputBuffer[i++] = stkValue[13]; //
+	cmd_inputBuffer[i++] = stkValue[12]; //
+	cmd_inputBuffer[i++] = stkValue[11]; //
+	cmd_inputBuffer[i++] = stkValue[10]; //
+	cmd_inputBuffer[i++] = stkValue[9]; //
+	cmd_inputBuffer[i++] = stkValue[8]; //
+	cmd_inputBuffer[i++] = stkValue[7]; //
+	cmd_inputBuffer[i++] = stkValue[6]; //
+	cmd_inputBuffer[i++] = stkValue[5]; //
+	cmd_inputBuffer[i++] = stkValue[4]; //
+	cmd_inputBuffer[i++] = stkValue[3]; //
+	cmd_inputBuffer[i++] = stkValue[2]; //
+	cmd_inputBuffer[i++] = stkValue[1]; //
+	cmd_inputBuffer[i++] = stkValue[0]; //
+	printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
+	ResetEvent(hEventCmdFinished);
+	success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
+	if (!success)
+	{
+		printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+		return EXIT_FAILURE;
+	}
+	else
+	{
+		printf("LTK Request Reply sent.\n");
+		printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
+	}
+
+	printf("Waiting for the end of the LTK Request Reply command...\n");
+	WaitForSingleObject(hEventCmdFinished, 1000);
+
+	printf("Sending Encryption Information...\n");
+	i = 0;
+	cmd_inputBuffer[i++] = 0x19; // Length of the IOCTL message
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x02; // ACL data
+	cmd_inputBuffer[i++] = connectionHandle[0];
+	cmd_inputBuffer[i++] = connectionHandle[1];
+	cmd_inputBuffer[i++] = 0x15; // Length of the ACL message
+	cmd_inputBuffer[i++] = 0x00; // 
+	cmd_inputBuffer[i++] = 0x11; // Length of the L2CAP message
+	cmd_inputBuffer[i++] = 0x00; //
+	cmd_inputBuffer[i++] = 0x06; // Security Manager Protocol
+	cmd_inputBuffer[i++] = 0x00; //
+	cmd_inputBuffer[i++] = 0x06; // Encryption Information
+	cmd_inputBuffer[i++] = ltkValue[15]; // LTK value
+	cmd_inputBuffer[i++] = ltkValue[14]; //
+	cmd_inputBuffer[i++] = ltkValue[13]; //
+	cmd_inputBuffer[i++] = ltkValue[12]; //
+	cmd_inputBuffer[i++] = ltkValue[11]; //
+	cmd_inputBuffer[i++] = ltkValue[10]; //
+	cmd_inputBuffer[i++] = ltkValue[9]; //
+	cmd_inputBuffer[i++] = ltkValue[8]; //
+	cmd_inputBuffer[i++] = ltkValue[7]; //
+	cmd_inputBuffer[i++] = ltkValue[6]; //
+	cmd_inputBuffer[i++] = ltkValue[5]; //
+	cmd_inputBuffer[i++] = ltkValue[4]; //
+	cmd_inputBuffer[i++] = ltkValue[3]; //
+	cmd_inputBuffer[i++] = ltkValue[2]; //
+	cmd_inputBuffer[i++] = ltkValue[1]; //
+	cmd_inputBuffer[i++] = ltkValue[0]; //
+	printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
+	success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
+	if (!success)
+	{
+		printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+		return EXIT_FAILURE;
+	}
+	else
+	{
+		printf("Encryption Information sent.\n");
+		printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
+	}
+
+
+	printf("Sending Master Identification...\n");
+	i = 0;
+	cmd_inputBuffer[i++] = 0x13; // Length of the IOCTL message
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x00;
+	cmd_inputBuffer[i++] = 0x02; // ACL data
+	cmd_inputBuffer[i++] = connectionHandle[0];
+	cmd_inputBuffer[i++] = connectionHandle[1];
+	cmd_inputBuffer[i++] = 0x0F; // Length of the ACL message
+	cmd_inputBuffer[i++] = 0x00; // 
+	cmd_inputBuffer[i++] = 0x0B; // Length of the L2CAP message
+	cmd_inputBuffer[i++] = 0x00; //
+	cmd_inputBuffer[i++] = 0x06; // Security Manager Protocol
+	cmd_inputBuffer[i++] = 0x00; //
+	cmd_inputBuffer[i++] = 0x07; // Master Identification
+	cmd_inputBuffer[i++] = edivValue[1]; // EDIV value
+	cmd_inputBuffer[i++] = edivValue[0]; //
+	cmd_inputBuffer[i++] = randomValue[7]; // Random value
+	cmd_inputBuffer[i++] = randomValue[6]; //
+	cmd_inputBuffer[i++] = randomValue[5]; //
+	cmd_inputBuffer[i++] = randomValue[4]; //
+	cmd_inputBuffer[i++] = randomValue[3]; //
+	cmd_inputBuffer[i++] = randomValue[2]; //
+	cmd_inputBuffer[i++] = randomValue[1]; //
+	cmd_inputBuffer[i++] = randomValue[0]; //
+	printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
+	success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
+	if (!success)
+	{
+		printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+		return EXIT_FAILURE;
+	}
+	else
+	{
+		printf("Master Identification sent.\n");
+		printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
+	}
+
+	printf("Waiting for the Signing Information...\n");
+	waitForMessage(isSigningInformationReceived);
+	if (FALSE == mainLoop_continue) return EXIT_FAILURE;
+
+	return EXIT_SUCCESS;
+}
+
 int main()
 {
 	BYTE* cmd_inputBuffer;
@@ -1085,8 +1436,6 @@ int main()
 	DWORD nbIterationWoAclRequest = 0;
 	int mouseDataIdx;
 
-	pAttributeRequested = (AttributeRequested*)malloc(sizeof(AttributeRequested));
-	pAttributeRequested->opcode = 0x00;
 	aclData[0] = (BYTE*)malloc(1024);
 	aclData[1] = (BYTE*)malloc(1024);
 	attMsgReceived = (BYTE*)malloc(1024);
@@ -1107,6 +1456,11 @@ int main()
 
 	initData(characteristics, services, informations, reportMap, mouseData);
 
+	// Our LTK (Long Term Key) value (TODO: we can generate a new random value each time)
+	BYTE ltkValue[] = {
+		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10
+	};
 
 	mainLoop_continue = TRUE;
 	SetConsoleCtrlHandler(consoleHandler, TRUE);
@@ -1361,12 +1715,22 @@ int main()
 	printf("Waiting for the end of the Set Advertise Enable command...\n");
 	WaitForSingleObject(hEventCmdFinished, 1000);
 
-	printf("Long wait for the Pairing Request...\n");
+	printf("Wait for the Pairing Request or for the LTK Request...\n");
 	do
 	{
 		if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
 		{
 			parseAclData();
+		}
+
+		if (isPairingRequestReceived())
+		{
+			break;
+		}
+
+		if (WaitForSingleObject(hEventLTKRqstReceived, 0) == WAIT_OBJECT_0) // We have already waiting for 500ms
+		{
+			break;
 		}
 
 		if (FALSE == mainLoop_continue)
@@ -1374,374 +1738,75 @@ int main()
 			goto exit;
 		}
 
-	} while (FALSE == isPairingRequestReceived());
-
-	printf("Sending Pairing Response...\n");
-	i = 0;
-	cmd_inputBuffer[i++] = 0x0F; // Length of the IOCTL message
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x02; // ACL data
-	cmd_inputBuffer[i++] = connectionHandle[0];
-	cmd_inputBuffer[i++] = connectionHandle[1];
-	cmd_inputBuffer[i++] = 0x0B; // Length of the ACL message
-	cmd_inputBuffer[i++] = 0x00; // 
-	cmd_inputBuffer[i++] = 0x07; // Length of the L2CAP message
-	cmd_inputBuffer[i++] = 0x00; //
-	cmd_inputBuffer[i++] = 0x06; // Security Manager Protocol
-	cmd_inputBuffer[i++] = 0x00; //
-	cmd_inputBuffer[i++] = 0x02; // Pairing Response
-	cmd_inputBuffer[i++] = 0x03; // IO Capability: No Input, No Output
-	cmd_inputBuffer[i++] = 0x00; // OOB Data Flags: OOB Auth. Data Not Present
-	cmd_inputBuffer[i++] = 0x01; // AuthReq: 0x01, Bonding Flags: Bonding
-	cmd_inputBuffer[i++] = 0x10; // Max Encryption Key Size
-	cmd_inputBuffer[i++] = 0x04; // Initiator Key Distribution: Signature Key (CSRK)
-	cmd_inputBuffer[i++] = 0x01; // Responder Key Distribution: Encryption Key (LTK)
-	printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
-	success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
-	if (!success)
+	} while (TRUE);
+	// An Exchange MTU Request can also be received at the same time.
+	if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
 	{
-		printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
-		goto exit;
+		parseAclData();
+	}
+
+	if (isPairingRequestReceived())
+	{
+		// We have to start the pairing process
+		if (pairing(hciControlDeviceCmd, cmd_inputBuffer, cmd_outputBuffer, ltkValue) == EXIT_FAILURE) goto exit;
 	}
 	else
 	{
-		printf("Pairing Response sent.\n");
-		printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
-		storePairingResponse(cmd_inputBuffer);
-	}
+		// The pairing was already done a previous time
+		// We just have to encrypt the connection
 
-	// Our(slave) "random" value (TODO: we can generate a new random value each time)
-	BYTE sRand[] = {
-		0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA,
-		0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA
-	};
-	
-	// Some information of the Connection Complete Event are mandatory to compute the Pairing Confirm 
-	printf("Waiting for the Connection Complete...\n");
-	if (WaitForSingleObject(hEventConnCmpltReceived, 1000) != WAIT_OBJECT_0)
-	{
-		goto exit;
-	}
-
-	printf("Waiting for the Pairing Confirm...\n");
-	do
-	{
-		if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
+		printf("Sending LTK Request Reply command...\n");
+		i = 0;
+		cmd_inputBuffer[i++] = 0x15; // Length of the IOCTL message
+		cmd_inputBuffer[i++] = 0x00;
+		cmd_inputBuffer[i++] = 0x00;
+		cmd_inputBuffer[i++] = 0x00;
+		cmd_inputBuffer[i++] = 0x01; // Command
+		cmd_inputBuffer[i++] = 0x1A; // OGF 0x08, OCF 0x001A
+		cmd_inputBuffer[i++] = 0x20; // 
+		cmd_inputBuffer[i++] = 0x12; // Parameter Total Length
+		cmd_inputBuffer[i++] = connectionHandle[0];
+		cmd_inputBuffer[i++] = connectionHandle[1];
+		cmd_inputBuffer[i++] = ltkValue[15]; // Long Term Key
+		cmd_inputBuffer[i++] = ltkValue[14]; //
+		cmd_inputBuffer[i++] = ltkValue[13]; //
+		cmd_inputBuffer[i++] = ltkValue[12]; //
+		cmd_inputBuffer[i++] = ltkValue[11]; //
+		cmd_inputBuffer[i++] = ltkValue[10]; //
+		cmd_inputBuffer[i++] = ltkValue[9]; //
+		cmd_inputBuffer[i++] = ltkValue[8]; //
+		cmd_inputBuffer[i++] = ltkValue[7]; //
+		cmd_inputBuffer[i++] = ltkValue[6]; //
+		cmd_inputBuffer[i++] = ltkValue[5]; //
+		cmd_inputBuffer[i++] = ltkValue[4]; //
+		cmd_inputBuffer[i++] = ltkValue[3]; //
+		cmd_inputBuffer[i++] = ltkValue[2]; //
+		cmd_inputBuffer[i++] = ltkValue[1]; //
+		cmd_inputBuffer[i++] = ltkValue[0]; //
+		printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
+		ResetEvent(hEventCmdFinished);
+		success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
+		if (!success)
 		{
-			parseAclData();
+			printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+			return EXIT_FAILURE;
 		}
-
-		if (FALSE == mainLoop_continue)
+		else
 		{
-			goto exit;
+			printf("LTK Request Reply sent.\n");
+			printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 		}
-
-	} while (FALSE == isPairingConfirmReceived());
-
-	printf("Computing pairing confirm...\n");
-	BYTE confirmValue[16];
-	computeConfirmValue(sRand, pairingRequest, pairingResponse, iat, ia, rat, ra, confirmValue);
-	printBuffer2HexString(sRand, 16, FALSE, 'r');
-	printBuffer2HexString(pairingRequest, 7, FALSE, 'p');
-	printBuffer2HexString(pairingResponse, 7, FALSE, 'p');
-	printBuffer2HexString(ia, 6, FALSE, 'i');
-	printBuffer2HexString(ra, 6, FALSE, 'r');
-	printBuffer2HexString(confirmValue, 16, FALSE, 'v');
-	printf("Pairing confirm computed.\n");
-
-	printf("Sending Pairing Confirm...\n");
-	i = 0;
-	cmd_inputBuffer[i++] = 0x19; // Length of the IOCTL message
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x02; // ACL data
-	cmd_inputBuffer[i++] = connectionHandle[0];
-	cmd_inputBuffer[i++] = connectionHandle[1];
-	cmd_inputBuffer[i++] = 0x15; // Length of the ACL message
-	cmd_inputBuffer[i++] = 0x00; // 
-	cmd_inputBuffer[i++] = 0x11; // Length of the L2CAP message
-	cmd_inputBuffer[i++] = 0x00; //
-	cmd_inputBuffer[i++] = 0x06; // Security Manager Protocol
-	cmd_inputBuffer[i++] = 0x00; //
-	cmd_inputBuffer[i++] = 0x03; // Pairing Confirm
-	cmd_inputBuffer[i++] = confirmValue[15]; // Confirm value
-	cmd_inputBuffer[i++] = confirmValue[14]; //
-	cmd_inputBuffer[i++] = confirmValue[13]; //
-	cmd_inputBuffer[i++] = confirmValue[12]; //
-	cmd_inputBuffer[i++] = confirmValue[11]; //
-	cmd_inputBuffer[i++] = confirmValue[10]; //
-	cmd_inputBuffer[i++] = confirmValue[9]; //
-	cmd_inputBuffer[i++] = confirmValue[8]; //
-	cmd_inputBuffer[i++] = confirmValue[7]; //
-	cmd_inputBuffer[i++] = confirmValue[6]; //
-	cmd_inputBuffer[i++] = confirmValue[5]; //
-	cmd_inputBuffer[i++] = confirmValue[4]; //
-	cmd_inputBuffer[i++] = confirmValue[3]; //
-	cmd_inputBuffer[i++] = confirmValue[2]; //
-	cmd_inputBuffer[i++] = confirmValue[1]; //
-	cmd_inputBuffer[i++] = confirmValue[0]; //
-	printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
-	success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
-	if (!success)
-	{
-		printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
-		goto exit;
-	}
-	else
-	{
-		printf("Pairing Confirm sent.\n");
-		printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 	}
 
+	// Change the connection parameters to reduce ATT message loss
+	sendConnectionParameterUpdateRequest(hciControlDeviceCmd, cmd_inputBuffer, cmd_outputBuffer);
+	printf("Waiting for the Connection Parameter Update Response...\n");
+	waitForMessage(isConnectionParameterUpdateResponseReceived);
+	if (FALSE == mainLoop_continue) goto exit;
 
-	printf("Waiting for the Pairing Random...\n");
-	do
+	printf("Main loop...\n");
+	while (mainLoop_continue)
 	{
-		if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
-		{
-			parseAclData();
-		}
-
-		if (FALSE == mainLoop_continue)
-		{
-			goto exit;
-		}
-
-	} while (FALSE == isPairingRandomReceived());
-
-	printf("Sending Pairing Random...\n");
-	i = 0; 
-	cmd_inputBuffer[i++] = 0x19; // Length of the IOCTL message
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x02; // ACL data
-	cmd_inputBuffer[i++] = connectionHandle[0];
-	cmd_inputBuffer[i++] = connectionHandle[1];
-	cmd_inputBuffer[i++] = 0x15; // Length of the ACL message
-	cmd_inputBuffer[i++] = 0x00; // 
-	cmd_inputBuffer[i++] = 0x11; // Length of the L2CAP message
-	cmd_inputBuffer[i++] = 0x00; //
-	cmd_inputBuffer[i++] = 0x06; // Security Manager Protocol
-	cmd_inputBuffer[i++] = 0x00; //
-	cmd_inputBuffer[i++] = 0x04; // Pairing Random
-	cmd_inputBuffer[i++] = sRand[15]; // Random value
-	cmd_inputBuffer[i++] = sRand[14]; //
-	cmd_inputBuffer[i++] = sRand[13]; //
-	cmd_inputBuffer[i++] = sRand[12]; //
-	cmd_inputBuffer[i++] = sRand[11]; //
-	cmd_inputBuffer[i++] = sRand[10]; //
-	cmd_inputBuffer[i++] = sRand[9]; //
-	cmd_inputBuffer[i++] = sRand[8]; //
-	cmd_inputBuffer[i++] = sRand[7]; //
-	cmd_inputBuffer[i++] = sRand[6]; //
-	cmd_inputBuffer[i++] = sRand[5]; //
-	cmd_inputBuffer[i++] = sRand[4]; //
-	cmd_inputBuffer[i++] = sRand[3]; //
-	cmd_inputBuffer[i++] = sRand[2]; //
-	cmd_inputBuffer[i++] = sRand[1]; //
-	cmd_inputBuffer[i++] = sRand[0]; //
-	printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
-	success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
-	if (!success)
-	{
-		printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
-		goto exit;
-	}
-	else
-	{
-		printf("Pairing Random sent.\n");
-		printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
-	}
-
-	// Our LTK (Long Term Key) value (TODO: we can generate a new random value each time)
-	BYTE ltkValue[] = {
-		0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-		0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10
-	};
-
-	// Our EDIV (Encrypted Diversifier) value (TODO: we can generate a new random value each time)
-	BYTE edivValue[] = {
-		0xA0, 0xB0
-	};
-
-	// Our "random" value (TODO: we can generate a new random value each time)
-	BYTE randomValue[] = {
-		0XCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA, 0xCA
-	};
-
-	printf("Waiting for the LTK Request...\n");
-	if (WaitForSingleObject(hEventLTKRqstReceived, 1000) != WAIT_OBJECT_0)
-	{
-		goto exit;
-	}
-
-	printf("Computing STK...\n");
-	BYTE stkValue[16];
-	printBuffer2HexString(sRand, 16, FALSE, 's');
-	printBuffer2HexString(mRand, 16, FALSE, 'm');
-	computeStk(sRand, mRand, stkValue);
-	printBuffer2HexString(stkValue, 16, FALSE, 'k');
-	printf("STK computed.\n");
-
-	printf("Sending LTK Request Reply command...\n");
-	i = 0;
-	cmd_inputBuffer[i++] = 0x15; // Length of the IOCTL message
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x01; // Command
-	cmd_inputBuffer[i++] = 0x1A; // OGF 0x08, OCF 0x001A
-	cmd_inputBuffer[i++] = 0x20; // 
-	cmd_inputBuffer[i++] = 0x12; // Parameter Total Length
-	cmd_inputBuffer[i++] = connectionHandle[0];
-	cmd_inputBuffer[i++] = connectionHandle[1];
-	cmd_inputBuffer[i++] = stkValue[15]; // Long Term Key (in fact the Short Term Key because we were not bond with the master device before)
-	cmd_inputBuffer[i++] = stkValue[14]; //
-	cmd_inputBuffer[i++] = stkValue[13]; //
-	cmd_inputBuffer[i++] = stkValue[12]; //
-	cmd_inputBuffer[i++] = stkValue[11]; //
-	cmd_inputBuffer[i++] = stkValue[10]; //
-	cmd_inputBuffer[i++] = stkValue[9]; //
-	cmd_inputBuffer[i++] = stkValue[8]; //
-	cmd_inputBuffer[i++] = stkValue[7]; //
-	cmd_inputBuffer[i++] = stkValue[6]; //
-	cmd_inputBuffer[i++] = stkValue[5]; //
-	cmd_inputBuffer[i++] = stkValue[4]; //
-	cmd_inputBuffer[i++] = stkValue[3]; //
-	cmd_inputBuffer[i++] = stkValue[2]; //
-	cmd_inputBuffer[i++] = stkValue[1]; //
-	cmd_inputBuffer[i++] = stkValue[0]; //
-	printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
-	ResetEvent(hEventCmdFinished);
-	success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
-	if (!success)
-	{
-		printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
-		goto exit;
-	}
-	else
-	{
-		printf("LTK Request Reply sent.\n");
-		printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
-	}
-
-	printf("Waiting for the end of the LTK Request Reply command...\n");
-	WaitForSingleObject(hEventCmdFinished, 1000);
-
-	printf("Sending Encryption Information...\n");
-	i = 0;
-	cmd_inputBuffer[i++] = 0x19; // Length of the IOCTL message
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x02; // ACL data
-	cmd_inputBuffer[i++] = connectionHandle[0];
-	cmd_inputBuffer[i++] = connectionHandle[1];
-	cmd_inputBuffer[i++] = 0x15; // Length of the ACL message
-	cmd_inputBuffer[i++] = 0x00; // 
-	cmd_inputBuffer[i++] = 0x11; // Length of the L2CAP message
-	cmd_inputBuffer[i++] = 0x00; //
-	cmd_inputBuffer[i++] = 0x06; // Security Manager Protocol
-	cmd_inputBuffer[i++] = 0x00; //
-	cmd_inputBuffer[i++] = 0x06; // Encryption Information
-	cmd_inputBuffer[i++] = ltkValue[15]; // LTK value
-	cmd_inputBuffer[i++] = ltkValue[14]; //
-	cmd_inputBuffer[i++] = ltkValue[13]; //
-	cmd_inputBuffer[i++] = ltkValue[12]; //
-	cmd_inputBuffer[i++] = ltkValue[11]; //
-	cmd_inputBuffer[i++] = ltkValue[10]; //
-	cmd_inputBuffer[i++] = ltkValue[9]; //
-	cmd_inputBuffer[i++] = ltkValue[8]; //
-	cmd_inputBuffer[i++] = ltkValue[7]; //
-	cmd_inputBuffer[i++] = ltkValue[6]; //
-	cmd_inputBuffer[i++] = ltkValue[5]; //
-	cmd_inputBuffer[i++] = ltkValue[4]; //
-	cmd_inputBuffer[i++] = ltkValue[3]; //
-	cmd_inputBuffer[i++] = ltkValue[2]; //
-	cmd_inputBuffer[i++] = ltkValue[1]; //
-	cmd_inputBuffer[i++] = ltkValue[0]; //
-	printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
-	success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
-	if (!success)
-	{
-		printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
-		goto exit;
-	}
-	else
-	{
-		printf("Encryption Information sent.\n");
-		printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
-	}
-
-
-	printf("Sending Master Identification...\n");
-	i = 0;
-	cmd_inputBuffer[i++] = 0x13; // Length of the IOCTL message
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x02; // ACL data
-	cmd_inputBuffer[i++] = connectionHandle[0];
-	cmd_inputBuffer[i++] = connectionHandle[1];
-	cmd_inputBuffer[i++] = 0x0F; // Length of the ACL message
-	cmd_inputBuffer[i++] = 0x00; // 
-	cmd_inputBuffer[i++] = 0x0B; // Length of the L2CAP message
-	cmd_inputBuffer[i++] = 0x00; //
-	cmd_inputBuffer[i++] = 0x06; // Security Manager Protocol
-	cmd_inputBuffer[i++] = 0x00; //
-	cmd_inputBuffer[i++] = 0x07; // Master Identification
-	cmd_inputBuffer[i++] = edivValue[1]; // EDIV value
-	cmd_inputBuffer[i++] = edivValue[0]; //
-	cmd_inputBuffer[i++] = randomValue[7]; // Random value
-	cmd_inputBuffer[i++] = randomValue[6]; //
-	cmd_inputBuffer[i++] = randomValue[5]; //
-	cmd_inputBuffer[i++] = randomValue[4]; //
-	cmd_inputBuffer[i++] = randomValue[3]; //
-	cmd_inputBuffer[i++] = randomValue[2]; //
-	cmd_inputBuffer[i++] = randomValue[1]; //
-	cmd_inputBuffer[i++] = randomValue[0]; //
-	printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
-	success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
-	if (!success)
-	{
-		printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
-		goto exit;
-	}
-	else
-	{
-		printf("Master Identification sent.\n");
-		printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
-	}
-
-	printf("Waiting for the Signing Information...\n");
-	do
-	{
-		if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
-		{
-			parseAclData();
-		}
-
-		if (FALSE == mainLoop_continue)
-		{
-			goto exit;
-		}
-
-	} while (FALSE == isSigningInformationReceived());
-
-
-	printf("Waiting for the optional Exchange MTU Request ...\n");
-	i = 0;
-	do
-	{
-		if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
-		{
-			parseAclData();
-		}
-
 		if (isExchangeMTURequestReceived())
 		{
 			printf("Sending Exchange MTU Response...\n");
@@ -1774,36 +1839,8 @@ int main()
 				printf("Exchange MTU Response sent.\n");
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
-			break;
 		}
-
-		if (FALSE == mainLoop_continue)
-		{
-			goto exit;
-		}
-
-	} while (i++ < 2);
-
-	sendConnectionParameterUpdateRequest(hciControlDeviceCmd, cmd_inputBuffer, cmd_outputBuffer);
-	printf("Waiting for the Connection Parameter Update Response...\n");
-	do
-	{
-		if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
-		{
-			parseAclData();
-		}
-
-		if (FALSE == mainLoop_continue)
-		{
-			goto exit;
-		}
-
-	} while (FALSE == isConnectionParameterUpdateResponseReceived());
-
-	printf("Main loop...\n");
-	while (mainLoop_continue)
-	{
-		if (isReadByTypeRequestReceivedAndAttributeFound(0x03, 0x28, characteristics, 11)) // GATT Characteristic Declaration
+		else if (isReadByTypeRequestReceivedAndAttributeFound(0x03, 0x28, characteristics, 11)) // GATT Characteristic Declaration
 		{
 			printf("Sending Read By Type Response for GATT Characteristic Declaration...\n");
 			i = 0;
@@ -1859,9 +1896,7 @@ int main()
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
-		else if (pAttributeRequested->opcode == 0x08	// Read By Type Request
-			&& pAttributeRequested->uuid[0] == 0x50	// PnP ID
-			&& pAttributeRequested->uuid[1] == 0x2A)  //
+		else if (isReadByTypeRequestReceived(0x50, 0x2A))	// PnP ID
 		{
 			printf("Sending Read By Type Response for PnP ID...\n");
 			i = 0;
@@ -1902,9 +1937,7 @@ int main()
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
-		else if (pAttributeRequested->opcode == 0x08	// Read By Type Request
-			&& pAttributeRequested->uuid[0] == 0x04	// Peripheral Preferred Connection Parameters
-			&& pAttributeRequested->uuid[1] == 0x2A)  //
+		else if (isReadByTypeRequestReceived(0x04, 0x2A))	// Peripheral Preferred Connection Parameters
 		{
 			printf("Sending Read By Type Response for Peripheral Preferred Connection Parameters...\n");
 			i = 0;
@@ -1946,10 +1979,7 @@ int main()
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
-		else if (pAttributeRequested->opcode == 0x10	// Read By Group Type Request
-			&& pAttributeRequested->uuid[0] == 0x00	// GATT Primary Service Declaration
-			&& pAttributeRequested->uuid[1] == 0x28   //
-			&& isAttributeInRange(services, 4))
+		else if (isReadByGroupTypeRequestReceivedAndAttributeFound(0x00, 0x28, services, 4))	// GATT Primary Service Declaration
 		{
 			printf("Sending Read By Group Type Response for GATT Primary Service Declaration...\n");
 			i = 0;
@@ -1972,10 +2002,10 @@ int main()
 			int startMTU = i;
 			for (int srvIdx = 0; srvIdx < 4; srvIdx++)
 			{
-				if (services[srvIdx].handle[0] >= pAttributeRequested->startingHandle[0]
-					&& services[srvIdx].handle[1] >= pAttributeRequested->startingHandle[1]
-					&& services[srvIdx].handle[0] <= pAttributeRequested->endingHandle[0]
-					&& services[srvIdx].handle[1] <= pAttributeRequested->endingHandle[1]
+				if (services[srvIdx].handle[0] >= attMsgReceived[14] // startingHandle0
+					&& services[srvIdx].handle[1] >= attMsgReceived[15] // startingHandle0
+					&& services[srvIdx].handle[0] <= attMsgReceived[16] // endingHandle0
+					&& services[srvIdx].handle[1] <= attMsgReceived[17] // endingHandle1
 					&& i - startMTU < 23 - 6) // Do we still have enough place for a new attribute value ?
 				{
 					cmd_inputBuffer[i++] = services[srvIdx].handle[0];
@@ -2004,15 +2034,10 @@ int main()
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
-		else if (pAttributeRequested->opcode == 0x06	// Find By Type Value Request
-			&& pAttributeRequested->uuid[0] == 0x00	// GATT Primary Service Declaration
-			&& pAttributeRequested->uuid[1] == 0x28	//
-			&& pAttributeRequested->value[0] == 0x01	// Generic Attribute Profile
-			&& pAttributeRequested->value[1] == 0x18	//
-			&& pAttributeRequested->startingHandle[0] <= 0x08
-			&& pAttributeRequested->startingHandle[1] == 0x00
-			&& pAttributeRequested->endingHandle[0] >= 0x08
-			&& pAttributeRequested->endingHandle[1] >= 0x00)
+		else if (isFindByTypeValueRequestReceived(
+				0x00, 0x28	// GATT Primary Service Declaration
+				, 0x01, 0x18 // Generic Attribute Profile
+				, 0x08, 0x00, 0x08, 0x00))
 		{
 			printf("Sending Find By Type Value Response for type GATT Primary Service Declaration and value Generic Attribute Profile...\n");
 			i = 0;
@@ -2047,8 +2072,7 @@ int main()
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
-		else if (pAttributeRequested->opcode == 0x04 	// Find Information Request
-			&& isAttributeInRange(informations, 2))
+		else if (isFindInformationRequestReceivedAndAttributeFound(informations, 2))
 		{
 			printf("Sending Find Information Response for Report...\n");
 			i = 0;
@@ -2070,10 +2094,11 @@ int main()
 
 			for (int infoIdx = 0; infoIdx < 2; infoIdx++)
 			{
-				if (informations[infoIdx].handle[0] >= pAttributeRequested->startingHandle[0]
-					&& informations[infoIdx].handle[1] >= pAttributeRequested->startingHandle[1]
-					&& informations[infoIdx].handle[0] <= pAttributeRequested->endingHandle[0]
-					&& informations[infoIdx].handle[1] <= pAttributeRequested->endingHandle[1])
+				if (informations[infoIdx].handle[0] >= attMsgReceived[14] // startingHandle0
+					&& informations[infoIdx].handle[1] >= attMsgReceived[15] // startingHandle1
+					&& informations[infoIdx].handle[0] <= attMsgReceived[16] // endingHandle0
+					&& informations[infoIdx].handle[1] <= attMsgReceived[17] // endingHandle1
+					)
 				{
 					cmd_inputBuffer[i++] = informations[infoIdx].handle[0];
 					cmd_inputBuffer[i++] = informations[infoIdx].handle[1];
@@ -2099,9 +2124,7 @@ int main()
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
-		else if(pAttributeRequested->opcode == 0x0A // Read Request
-			&& pAttributeRequested->startingHandle[0] == 0x03
-			&& pAttributeRequested->startingHandle[1] == 0x00)
+		else if(isReadRequestReceived(0x03, 0x00))
 		{
 			printf("Sending Read Response for Generic Access Profile: Device Name...\n");
 			i = 0;
@@ -2145,9 +2168,7 @@ int main()
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
-		else if (pAttributeRequested->opcode == 0x0A // Read Request
-			&& pAttributeRequested->startingHandle[0] == 0x0D
-			&& pAttributeRequested->startingHandle[1] == 0x00)
+		else if (isReadRequestReceived(0x0D, 0x00))
 		{
 			printf("Sending Read Response for Device Information: PnP ID...\n");
 			i = 0;
@@ -2185,9 +2206,7 @@ int main()
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
-		else if (pAttributeRequested->opcode == 0x0A // Read Request
-			&& pAttributeRequested->startingHandle[0] == 0x10
-			&& pAttributeRequested->startingHandle[1] == 0x00)
+		else if (isReadRequestReceived(0x10, 0x00))
 		{
 			printf("Sending Read Response for Human Interface Device: Protocol Mode...\n");
 			i = 0;
@@ -2219,9 +2238,7 @@ int main()
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
-		else if (pAttributeRequested->opcode == 0x0A // Read Request
-			&& pAttributeRequested->startingHandle[0] == 0x12
-			&& pAttributeRequested->startingHandle[1] == 0x00)
+		else if (isReadRequestReceived(0x12, 0x00))
 		{
 			printf("Sending Read Response for Human Interface Device: Report...\n");
 			i = 0;
@@ -2252,9 +2269,7 @@ int main()
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
-		else if (pAttributeRequested->opcode == 0x0A // Read Request
-			&& pAttributeRequested->startingHandle[0] == 0x13
-			&& pAttributeRequested->startingHandle[1] == 0x00)
+		else if (isReadRequestReceived(0x13, 0x00))
 		{
 			printf("Sending Read Response for Human Interface Device: Report: Client Characteristic Configuration...\n");
 			i = 0;
@@ -2287,9 +2302,7 @@ int main()
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
-		else if (pAttributeRequested->opcode == 0x0A // Read Request
-			&& pAttributeRequested->startingHandle[0] == 0x14
-			&& pAttributeRequested->startingHandle[1] == 0x00)
+		else if (isReadRequestReceived(0x14, 0x00))
 		{
 			printf("Sending Read Response for Human Interface Device: Report: Report Reference...\n");
 			i = 0;
@@ -2322,9 +2335,7 @@ int main()
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
-		else if (pAttributeRequested->opcode == 0x0A // Read Request
-			&& pAttributeRequested->startingHandle[0] == 0x16
-			&& pAttributeRequested->startingHandle[1] == 0x00)
+		else if (isReadRequestReceived(0x16, 0x00))
 		{
 			printf("Sending Read Response for Human Interface Device: Report Map...\n");
 			i = 0;
@@ -2360,9 +2371,7 @@ int main()
 				startedSendingReportMap = TRUE;
 			}
 		}
-		else if (pAttributeRequested->opcode == 0x0C // Read Blob Request
-			&& pAttributeRequested->startingHandle[0] == 0x16
-			&& pAttributeRequested->startingHandle[1] == 0x00)
+		else if (isReadBlobRequestReceived(0x16, 0x00))
 		{
 			printf("Sending Read Blob Response for Human Interface Device: Report Map...\n");
 			i = 0;
@@ -2381,8 +2390,8 @@ int main()
 			cmd_inputBuffer[i++] = 0x00; //
 			cmd_inputBuffer[i++] = 0x0D; // Read Blob Response
 			
-			for (reportMapIdx = pAttributeRequested->valueOffset[0]; 
-				reportMapIdx < 22 + pAttributeRequested->valueOffset[0] && reportMapIdx < 106; // Why 22 instead of the MTU 23 ?
+			for (reportMapIdx = attMsgReceived[16]; // valueOffset0
+				reportMapIdx < 22 + attMsgReceived[16] && reportMapIdx < 106; // Why 22 instead of the MTU 23 ?
 				reportMapIdx++) 
 			{
 				cmd_inputBuffer[i++] = reportMap[reportMapIdx];
@@ -2405,9 +2414,7 @@ int main()
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
-		else if (pAttributeRequested->opcode == 0x0A // Read Request
-			&& pAttributeRequested->startingHandle[0] == 0x1B
-			&& pAttributeRequested->startingHandle[1] == 0x00)
+		else if (isReadRequestReceived(0x1B, 0x00))
 		{
 			printf("Sending Read Response for Human Interface Device: HID Information...\n");
 			i = 0;
@@ -2442,7 +2449,7 @@ int main()
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
-		else if (pAttributeRequested->opcode == 0x12) // Write Request
+		else if (isWriteRequestReceived())
 		{
 			// We always acknowledge Write Requests
 			printf("Sending Write Response...\n");
@@ -2474,7 +2481,7 @@ int main()
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
-		else if (pAttributeRequested->opcode != 0x00)
+		else if (attMsgReceived[0] != 0x00) // We set the first byte to 0x00 when we don't receive a message (timeout when we are waiting for a new message).
 		{
 			// Unknown attribute
 			printf("Sending Error Response...\n");
@@ -2493,9 +2500,9 @@ int main()
 			cmd_inputBuffer[i++] = 0x04; // Attribute Protocol
 			cmd_inputBuffer[i++] = 0x00; //
 			cmd_inputBuffer[i++] = 0x01; // Error Response
-			cmd_inputBuffer[i++] = pAttributeRequested->opcode; // Request Opcode in Error
-			cmd_inputBuffer[i++] = pAttributeRequested->startingHandle[0]; // Attribute Handle In Error
-			cmd_inputBuffer[i++] = pAttributeRequested->startingHandle[1]; //
+			cmd_inputBuffer[i++] = attMsgReceived[13]; // Request Opcode in Error
+			cmd_inputBuffer[i++] = attMsgReceived[14]; // Attribute Handle In Error
+			cmd_inputBuffer[i++] = attMsgReceived[15]; //
 			cmd_inputBuffer[i++] = 0x0A; // Error Code = Attribute Not Found
 			printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
 			success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
@@ -2511,7 +2518,9 @@ int main()
 			}
 		}
 
-		if (startedSendingReportMap && nbIterationWoAclRequest == 1)
+		// Depending on the status of the connection (first pairing or already bonded) or of the client...
+		// ... we decide when we start sending the notifications
+		if (startedSendingReportMap && nbIterationWoAclRequest == 1 || nbIterationWoAclRequest == 2)
 		{
 			break;
 			// Next step: send notifications
@@ -2526,7 +2535,7 @@ int main()
 		else
 		{
 			ResetEvent(hEventAclDataReceived);
-			pAttributeRequested->opcode = 0x00;
+			attMsgReceived[0] = 0x00; // We set the first byte to 0x00 when we don't receive a message (timeout when we are waiting for a new message).
 			nbIterationWoAclRequest++;
 		}
 	}
@@ -2640,7 +2649,6 @@ exit:
 	CloseHandle(hLogFile);
 	free(cmd_inputBuffer);
 	free(cmd_outputBuffer);
-	free(pAttributeRequested);
 	free(aclData[0]);
 	free(aclData[1]);
 	free(attMsgReceived);
