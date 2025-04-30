@@ -26,6 +26,7 @@ static BYTE connectionHandle[2];
 static HANDLE hEventConnCmpltReceived = NULL;
 static HANDLE hEventLTKRqstReceived = NULL;
 static HANDLE hEventAclDataReceived = NULL;
+static HANDLE hEventConnUpdateCmpltReceived = NULL;
 static BYTE pairingRequest[7]; // MSB first
 static BYTE pairingResponse[7]; // MSB first
 static BYTE iat; // Initiating device address type
@@ -34,6 +35,8 @@ static BYTE rat = 0x00; // Responding device address type = public
 static BYTE ra[6]; // Responding device address 
 static BYTE mRand[16]; // Pairing random send by the initiator/master device (MSB first)
 static BYTE mtu[2] = {23,0}; // MTU common to initiating and responding device (default minimum = 23 bytes)
+static BYTE connectionInterval[2] = {6,0}; // We must request an update of the connection parameter when different from 0x0006
+static BYTE connectionLatency[2] = {0,0}; // We must request an update of the connection parameter when different from 0x0000
 static BYTE* aclData[2];
 static int activeAclData;
 static int passiveAclData;
@@ -111,6 +114,14 @@ void storeInitiatingDeviceInformation(BYTE* evtConCompltMsgReceived)
 	printf("Remote device address: %02X:%02X:%02X:%02X:%02X:%02X (type %s)\n", ia[0], ia[1], ia[2], ia[3], ia[4], ia[5], iat == 0 ? "public" : "random");
 }
 
+void StoreConnectionInformation(BYTE* evtConCompltMsgReceived)
+{
+	connectionInterval[0] = evtConCompltMsgReceived[19];
+	connectionInterval[1] = evtConCompltMsgReceived[20];
+	connectionLatency[0] = evtConCompltMsgReceived[21];
+	connectionLatency[1] = evtConCompltMsgReceived[22];
+}
+
 void storeRespondingDeviceInformation(BYTE* evtReadBdAddrCmdCompltMsgReceived)
 {
 	for (int i = 0; i < 6; i++)
@@ -165,11 +176,13 @@ DWORD WINAPI readEvents(void* notUsed)
 			{
 				printf("Received: Connection complete.\n");
 				storeInitiatingDeviceInformation(readEvent_outputBuffer);
+				StoreConnectionInformation(readEvent_outputBuffer);
 				SetEvent(hEventConnCmpltReceived);
 			}
 			else if (returned == 17 && readEvent_outputBuffer[5] == 0x3E && readEvent_outputBuffer[7] == 0x03)
 			{
 				printf("Received: Connection update complete.\n");
+				SetEvent(hEventConnUpdateCmpltReceived);
 			}
 			else if (returned == 20 && readEvent_outputBuffer[5] == 0x3E && readEvent_outputBuffer[7] == 0x05)
 			{
@@ -1081,6 +1094,10 @@ void waitForMessage(BOOL(*isMessageReceived)())
 		{
 			parseAclData();
 		}
+		else
+		{
+			ResetEvent(hEventAclDataReceived);
+		}
 
 		if (FALSE == mainLoop_continue)
 		{
@@ -1092,6 +1109,10 @@ void waitForMessage(BOOL(*isMessageReceived)())
 	if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
 	{
 		parseAclData();
+	}
+	else
+	{
+		ResetEvent(hEventAclDataReceived);
 	}
 }
 
@@ -1722,6 +1743,10 @@ int main()
 		{
 			parseAclData();
 		}
+		else
+		{
+			ResetEvent(hEventAclDataReceived);
+		}
 
 		if (isPairingRequestReceived())
 		{
@@ -1743,6 +1768,10 @@ int main()
 	if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
 	{
 		parseAclData();
+	}
+	else
+	{
+		ResetEvent(hEventAclDataReceived);
 	}
 
 	if (isPairingRequestReceived())
@@ -1798,11 +1827,35 @@ int main()
 		}
 	}
 
-	// Change the connection parameters to reduce ATT message loss
-	sendConnectionParameterUpdateRequest(hciControlDeviceCmd, cmd_inputBuffer, cmd_outputBuffer);
-	printf("Waiting for the Connection Parameter Update Response...\n");
-	waitForMessage(isConnectionParameterUpdateResponseReceived);
-	if (FALSE == mainLoop_continue) goto exit;
+	// Prepare to wait for the connection update complete event
+	hEventConnUpdateCmpltReceived = CreateEventW(
+		NULL,
+		TRUE,	// manually reset
+		FALSE,	// initial state: nonsignaled
+		L"WP81_WAIT_FOR_CONNECTION_UPDATE_COMPLETE"
+	);
+
+	if (connectionInterval[0] != 0x06 || connectionInterval[1] != 0x00
+		|| connectionLatency[0] != 0x00 || connectionLatency[1] != 0x00)
+	{
+		// We must request an update of the connection parameters to reduce ATT message loss
+
+		sendConnectionParameterUpdateRequest(hciControlDeviceCmd, cmd_inputBuffer, cmd_outputBuffer);
+		printf("Waiting for the Connection Parameter Update Response...\n");
+		// The reception of the ACL message "Connection Parameter Update Response" is not mandatory
+		if (WaitForSingleObject(hEventAclDataReceived, 500) == WAIT_OBJECT_0)
+		{
+			parseAclData();
+		}
+		else
+		{
+			ResetEvent(hEventAclDataReceived);
+		}
+
+		printf("Waiting for the Connection Update Complete event...\n");
+		// The reception of the event "Connection Update Complete" is not mandatory
+		WaitForSingleObject(hEventConnUpdateCmpltReceived, 500);
+	}
 
 	printf("Main loop...\n");
 	while (mainLoop_continue)
@@ -1837,6 +1890,7 @@ int main()
 			else
 			{
 				printf("Exchange MTU Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
@@ -1893,6 +1947,7 @@ int main()
 			else
 			{
 				printf("Read By Type Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
@@ -1934,6 +1989,7 @@ int main()
 			else
 			{
 				printf("Read By Type Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
@@ -1976,6 +2032,7 @@ int main()
 			else
 			{
 				printf("Read By Type Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
@@ -2031,6 +2088,7 @@ int main()
 			else
 			{
 				printf("Read By Group Type Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
@@ -2069,6 +2127,7 @@ int main()
 			else
 			{
 				printf("Find By Type Value Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
@@ -2121,6 +2180,7 @@ int main()
 			else
 			{
 				printf("Find Information Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
@@ -2165,6 +2225,7 @@ int main()
 			else
 			{
 				printf("Read Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
@@ -2203,6 +2264,7 @@ int main()
 			else
 			{
 				printf("Read Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
@@ -2235,6 +2297,7 @@ int main()
 			else
 			{
 				printf("Read Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
@@ -2266,6 +2329,7 @@ int main()
 			else
 			{
 				printf("Read Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
@@ -2299,6 +2363,7 @@ int main()
 			else
 			{
 				printf("Read Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
@@ -2332,6 +2397,7 @@ int main()
 			else
 			{
 				printf("Read Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
@@ -2367,6 +2433,7 @@ int main()
 			else
 			{
 				printf("Read Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 				startedSendingReportMap = TRUE;
 			}
@@ -2411,6 +2478,7 @@ int main()
 			else
 			{
 				printf("Read Blob Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
@@ -2446,6 +2514,7 @@ int main()
 			else
 			{
 				printf("Read Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
@@ -2478,6 +2547,7 @@ int main()
 			else
 			{
 				printf("Write Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
@@ -2514,6 +2584,7 @@ int main()
 			else
 			{
 				printf("Error Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
@@ -2535,7 +2606,6 @@ int main()
 		else
 		{
 			ResetEvent(hEventAclDataReceived);
-			attMsgReceived[0] = 0x00; // We set the first byte to 0x00 when we don't receive a message (timeout when we are waiting for a new message).
 			nbIterationWoAclRequest++;
 		}
 	}
@@ -2579,7 +2649,7 @@ int main()
 			cmd_inputBuffer[i++] = 0x00; // msb Wheel
 			cmd_inputBuffer[i++] = 0x00; // lsb Horizontal Wheel
 			cmd_inputBuffer[i++] = 0x00; // msb Horizontal Wheel
-			printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
+			//printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
 			success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
 			if (!success)
 			{
@@ -2588,7 +2658,7 @@ int main()
 			else
 			{
 				//printf("Handle Value Notification sent.\n");
-				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
+				//printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 				mouseDataIdx++;
 				if (mouseDataIdx > 87)
 				{
