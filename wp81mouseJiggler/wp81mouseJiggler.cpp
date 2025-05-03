@@ -44,6 +44,7 @@ static DWORD aclDataSize[2];
 static BYTE* attMsgReceived; // Last Attribut Protocol message received
 static BYTE* sigMsgReceived; // Last Signaling Protocol message received
 static BYTE* secMsgReceived; // Last Security Manager Protocol message received
+static DWORD packetNotCompleted;
 
 
 // Debug helper
@@ -72,6 +73,29 @@ void printBuffer2HexString(BYTE* buffer, size_t bufSize, BOOL isReceived, CHAR s
 	if (hLogFile != NULL)
 	{
 		DWORD dwBytesToWrite = 25 + i * 3;
+		DWORD dwBytesWritten = 0;
+		WriteFile(
+			hLogFile,           // open file handle
+			temp,      // start of data to write
+			dwBytesToWrite,  // number of bytes to write
+			&dwBytesWritten, // number of bytes that were written
+			NULL);            // no overlapped structure
+	}
+
+	free(temp);
+}
+
+void printStringValue(CHAR* string0, DWORD value)
+{
+	FILETIME SystemFileTime;
+	CHAR *temp = (CHAR*)malloc(1024);
+
+	GetSystemTimeAsFileTime(&SystemFileTime);
+	sprintf_s(temp, 1024, "%010u.%010u %s %u\n", SystemFileTime.dwHighDateTime, SystemFileTime.dwLowDateTime, string0, value);
+
+	if (hLogFile != NULL)
+	{
+		DWORD dwBytesToWrite = strlen(temp);
 		DWORD dwBytesWritten = 0;
 		WriteFile(
 			hLogFile,           // open file handle
@@ -160,7 +184,9 @@ DWORD WINAPI readEvents(void* notUsed)
 		success = DeviceIoControl(hciControlDeviceEvt, IOCTL_CONTROL_READ_HCI, readEvent_inputBuffer, 4, readEvent_outputBuffer, 262, &returned, NULL);
 		if (success)
 		{
-			printBuffer2HexString(readEvent_outputBuffer, returned, TRUE, 'e');
+			if (returned != 12 || readEvent_outputBuffer[5] != 0x13) // Don't print event "Number Of Completed Packets"
+				printBuffer2HexString(readEvent_outputBuffer, returned, TRUE, 'e');
+
 			if (returned == 11 && readEvent_outputBuffer[5] == 0x0E)
 			{
 				printf("Received: Command complete.\n");
@@ -189,6 +215,11 @@ DWORD WINAPI readEvents(void* notUsed)
 				printf("Received: LTK Request.\n");
 				storeConnectionHandleFromEvt(readEvent_outputBuffer);
 				SetEvent(hEventLTKRqstReceived);
+			}
+			else if (returned == 12 && readEvent_outputBuffer[5] == 0x13)
+			{
+				//printf("Received: Number Of Completed Packets.\n");
+				packetNotCompleted -= readEvent_outputBuffer[10];
 			}
 		}
 		else
@@ -765,6 +796,10 @@ void initData(AttributeData* characteristics, AttributeData* services, Attribute
 	informations[1].handle[1] = 0x00;
 	informations[1].UUID16bits[0] = 0x08; // Report Reference
 	informations[1].UUID16bits[1] = 0x29; //
+	informations[2].handle[0] = 0x19;
+	informations[2].handle[1] = 0x00;
+	informations[2].UUID16bits[0] = 0x02; // Client Characteristic Configuration
+	informations[2].UUID16bits[1] = 0x29; //
 
 	reportMap[0] = 0x05; // Usage Page (Generic Desktop Ctrls)
 	reportMap[1] = 0x01; // 
@@ -1468,7 +1503,7 @@ int main()
 
 	AttributeData* characteristics = (AttributeData*)malloc(11 * sizeof(AttributeData));
 	AttributeData* services = (AttributeData*)malloc(4 * sizeof(AttributeData));
-	AttributeData* informations = (AttributeData*)malloc(2 * sizeof(AttributeData));
+	AttributeData* informations = (AttributeData*)malloc(3 * sizeof(AttributeData));
 	
 	int reportMapIdx = 0;
 	BYTE* reportMap = (BYTE*)malloc(106);
@@ -2018,9 +2053,9 @@ int main()
 			cmd_inputBuffer[i++] = 0x00; //
 			cmd_inputBuffer[i++] = 0x06; // Interval_Max 0x0006
 			cmd_inputBuffer[i++] = 0x00; // 
-			cmd_inputBuffer[i++] = 0x00; // Latency 0x003C
+			cmd_inputBuffer[i++] = 0x00; // Latency 0x0000
 			cmd_inputBuffer[i++] = 0x00; // 
-			cmd_inputBuffer[i++] = 0xE8; // Timeout 0x012C
+			cmd_inputBuffer[i++] = 0xE8; // Timeout 0x03E8
 			cmd_inputBuffer[i++] = 0x03; //
 			printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
 			success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
@@ -2131,7 +2166,7 @@ int main()
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
-		else if (isFindInformationRequestReceivedAndAttributeFound(informations, 2))
+		else if (isFindInformationRequestReceivedAndAttributeFound(informations, 3))
 		{
 			printf("Sending Find Information Response for Report...\n");
 			i = 0;
@@ -2151,7 +2186,7 @@ int main()
 			cmd_inputBuffer[i++] = 0x05; // Find Information Response
 			cmd_inputBuffer[i++] = 0x01; // Format : Handle(s) and 16-bit Bluetooth	UUID(s)
 
-			for (int infoIdx = 0; infoIdx < 2; infoIdx++)
+			for (int infoIdx = 0; infoIdx < 3; infoIdx++)
 			{
 				if (informations[infoIdx].handle[0] >= attMsgReceived[14] // startingHandle0
 					&& informations[infoIdx].handle[1] >= attMsgReceived[15] // startingHandle1
@@ -2229,6 +2264,121 @@ int main()
 				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
 			}
 		}
+		else if (isReadRequestReceived(0x05, 0x00))
+		{
+			printf("Sending Read Response for Appearance...\n");
+			i = 0;
+			cmd_inputBuffer[i++] = 0x0B; // Length of the IOCTL message
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x02; // ACL data
+			cmd_inputBuffer[i++] = connectionHandle[0];
+			cmd_inputBuffer[i++] = connectionHandle[1];
+			cmd_inputBuffer[i++] = 0x07; // Length of the ACL message
+			cmd_inputBuffer[i++] = 0x00; // 
+			cmd_inputBuffer[i++] = 0x03; // Length of the L2CAP message
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x04; // Attribute Protocol
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x0B; // Read Response
+			cmd_inputBuffer[i++] = 0xC2; // Appearance=Mouse
+			cmd_inputBuffer[i++] = 0x03; //
+			printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
+			success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
+			if (!success)
+			{
+				printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+				goto exit;
+			}
+			else
+			{
+				printf("Read Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
+				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
+			}
+		}
+		else if (isReadRequestReceived(0x07, 0x00))
+		{
+			printf("Sending Read Response for Peripheral Preferred Connection Parameters...\n");
+			i = 0;
+			cmd_inputBuffer[i++] = 0x11; // Length of the IOCTL message
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x02; // ACL data
+			cmd_inputBuffer[i++] = connectionHandle[0];
+			cmd_inputBuffer[i++] = connectionHandle[1];
+			cmd_inputBuffer[i++] = 0x0D; // Length of the ACL message
+			cmd_inputBuffer[i++] = 0x00; // 
+			cmd_inputBuffer[i++] = 0x09; // Length of the L2CAP message
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x04; // Attribute Protocol
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x0B; // Read Response
+			cmd_inputBuffer[i++] = 0x06; // Interval_Min 0x0006
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x06; // Interval_Max 0x0006
+			cmd_inputBuffer[i++] = 0x00; // 
+			cmd_inputBuffer[i++] = 0x00; // Latency 0x0000
+			cmd_inputBuffer[i++] = 0x00; // 
+			cmd_inputBuffer[i++] = 0xE8; // Timeout 0x03E8
+			cmd_inputBuffer[i++] = 0x03; //
+			printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
+			success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
+			if (!success)
+			{
+				printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+				goto exit;
+			}
+			else
+			{
+				printf("Read Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
+				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
+			}
+		}
+		else if (isReadRequestReceived(0x0B, 0x00))
+		{
+			printf("Sending Read Response for Manufacturer Name String...\n");
+			i = 0;
+			cmd_inputBuffer[i++] = 0x12; // Length of the IOCTL message
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x02; // ACL data
+			cmd_inputBuffer[i++] = connectionHandle[0];
+			cmd_inputBuffer[i++] = connectionHandle[1];
+			cmd_inputBuffer[i++] = 0x0E; // Length of the ACL message
+			cmd_inputBuffer[i++] = 0x00; // 
+			cmd_inputBuffer[i++] = 0x0A; // Length of the L2CAP message
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x04; // Attribute Protocol
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x0B; // Read Response
+			cmd_inputBuffer[i++] = 0x4D; // Manufacturer=Microsoft
+			cmd_inputBuffer[i++] = 0x69; // 
+			cmd_inputBuffer[i++] = 0x63; //
+			cmd_inputBuffer[i++] = 0x72; //
+			cmd_inputBuffer[i++] = 0x6F; //
+			cmd_inputBuffer[i++] = 0x73; //
+			cmd_inputBuffer[i++] = 0x6F; //
+			cmd_inputBuffer[i++] = 0x66; //
+			cmd_inputBuffer[i++] = 0x74; //
+			printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
+			success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
+			if (!success)
+			{
+				printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+				goto exit;
+			}
+			else
+			{
+				printf("Read Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
+				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
+			}
+		}
 		else if (isReadRequestReceived(0x0D, 0x00))
 		{
 			printf("Sending Read Response for Device Information: PnP ID...\n");
@@ -2254,6 +2404,80 @@ int main()
 			cmd_inputBuffer[i++] = 0x09; // 
 			cmd_inputBuffer[i++] = 0x10; // Version
 			cmd_inputBuffer[i++] = 0x01; //
+			printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
+			success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
+			if (!success)
+			{
+				printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+				goto exit;
+			}
+			else
+			{
+				printf("Read Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
+				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
+			}
+		}
+		else if (isReadRequestReceived(0x18, 0x00))
+		{
+			printf("Sending Read Response for Boot Mouse Input Report...\n");
+			i = 0;
+			cmd_inputBuffer[i++] = 0x11; // Length of the IOCTL message
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x02; // ACL data
+			cmd_inputBuffer[i++] = connectionHandle[0];
+			cmd_inputBuffer[i++] = connectionHandle[1];
+			cmd_inputBuffer[i++] = 0x0D; // Length of the ACL message
+			cmd_inputBuffer[i++] = 0x00; // 
+			cmd_inputBuffer[i++] = 0x09; // Length of the L2CAP message
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x04; // Attribute Protocol
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x0B; // Read Response
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x00; // 
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x00; // 
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x00; //
+			printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
+			success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
+			if (!success)
+			{
+				printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+				goto exit;
+			}
+			else
+			{
+				printf("Read Response sent.\n");
+				attMsgReceived[0] = 0x00; // We set the first byte to 0x00 to not process 2 times the same ATT message.
+				printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
+			}
+		}
+		else if (isReadRequestReceived(0x19, 0x00))
+		{
+			printf("Sending Read Response for Boot Mouse Input Report : Client Characteristic Configuration...\n");
+			i = 0;
+			cmd_inputBuffer[i++] = 0x0B; // Length of the IOCTL message
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x00;
+			cmd_inputBuffer[i++] = 0x02; // ACL data
+			cmd_inputBuffer[i++] = connectionHandle[0];
+			cmd_inputBuffer[i++] = connectionHandle[1];
+			cmd_inputBuffer[i++] = 0x07; // Length of the ACL message
+			cmd_inputBuffer[i++] = 0x00; // 
+			cmd_inputBuffer[i++] = 0x03; // Length of the L2CAP message
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x04; // Attribute Protocol
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x0B; // Read Response
+			cmd_inputBuffer[i++] = 0x00; //
+			cmd_inputBuffer[i++] = 0x00; //
 			printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
 			success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
 			if (!success)
@@ -2653,7 +2877,9 @@ int main()
 			success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
 			if (!success)
 			{
-				printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+				DWORD lastError = GetLastError();
+				//printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
+				printStringValue("Failed to send DeviceIoControl!", lastError);
 			}
 			else
 			{
@@ -2663,6 +2889,12 @@ int main()
 				if (mouseDataIdx > 87)
 				{
 					mouseDataIdx = 0;
+				}
+
+				packetNotCompleted++;
+				if (packetNotCompleted > 2)
+				{
+					printStringValue("Packet not completed!", packetNotCompleted);
 				}
 			}
 		}
