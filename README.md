@@ -9,6 +9,7 @@ Tested with the following configurations:
 - Ubuntu 23.10 (Dell Latitude E5470)
 - ChromeOS 134.0 (ASUS CX5601)
 - Windows 10 Pro (Dell Latitude E5470)
+- Windows 8.1 Pro (Dell Latitude E5470)
 - Android 10 (Google Pixel)
 
 LE Legacy Pairing:  
