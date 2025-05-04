@@ -1,6 +1,6 @@
 # wp81mouseJiggler
-Turn your _Lumia 520_ into a kind of _Microsoft Bluetooth Mobile Mouse 3600_.  
-There is no graphical interface and it is a Proof-of-Concept before realising another more polished version.  
+Turns your _Lumia 520_ into a kind of _Microsoft Bluetooth Mobile Mouse 3600_.  
+There is no graphical interface as this is a Proof-of-Concept before another more polished version.  
 
 Example of result with a Chromebook:   
 ![video capture ChromeOS](lumiaMouse520_chromeos.gif)  
