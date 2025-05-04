@@ -51,10 +51,10 @@ In our case, the content of a notification is the following:
 | Bytes | Description | 
 |:-:|:-:|
 |0| 5 Buttons, one bit for each button: 0b00011111 |
-|1-2| Signed value of the X mouvement |
-|3-4| Signed value of the Y mouvement |
-|5-6| Signed value of the wheel mouvement |
-|7-8| Signed value of a second wheel mouvement |
+|1-2| Signed value of the X movement |
+|3-4| Signed value of the Y movement |
+|5-6| Signed value of the wheel movement |
+|7-8| Signed value of a second wheel movement |
 
 >[!NOTE]
 >Some Attribute Clients (like ChromeOS) require a MTU(Maximum Transmission Unit) of 23 bytes.  
