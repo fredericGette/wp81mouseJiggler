@@ -6,6 +6,10 @@ Example of result with a Chromebook:
 ![video capture ChromeOS](lumiaMouse520_chromeos.gif)  
 (animated gif optimized with [gifsicle](https://github.com/kohler/gifsicle))  
 
+## Usage
+
+![Example](Capture01.PNG)
+
 ## Description
 
 At the beginning of the program, the phone is in advertising mode. 
