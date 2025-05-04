@@ -44,7 +44,8 @@ static DWORD aclDataSize[2];
 static BYTE* attMsgReceived; // Last Attribut Protocol message received
 static BYTE* sigMsgReceived; // Last Signaling Protocol message received
 static BYTE* secMsgReceived; // Last Security Manager Protocol message received
-static DWORD packetNotCompleted;
+static DWORD nbPacketNotCompleted;
+static BOOL isConnCmpltReceived = FALSE;
 
 
 // Debug helper
@@ -92,6 +93,7 @@ void printStringValue(CHAR* string0, DWORD value)
 
 	GetSystemTimeAsFileTime(&SystemFileTime);
 	sprintf_s(temp, 1024, "%010u.%010u %s %u\n", SystemFileTime.dwHighDateTime, SystemFileTime.dwLowDateTime, string0, value);
+	printf("%s", temp);
 
 	if (hLogFile != NULL)
 	{
@@ -203,6 +205,7 @@ DWORD WINAPI readEvents(void* notUsed)
 				printf("Received: Connection complete.\n");
 				storeInitiatingDeviceInformation(readEvent_outputBuffer);
 				StoreConnectionInformation(readEvent_outputBuffer);
+				isConnCmpltReceived = TRUE;
 				SetEvent(hEventConnCmpltReceived);
 			}
 			else if (returned == 17 && readEvent_outputBuffer[5] == 0x3E && readEvent_outputBuffer[7] == 0x03)
@@ -219,7 +222,14 @@ DWORD WINAPI readEvents(void* notUsed)
 			else if (returned == 12 && readEvent_outputBuffer[5] == 0x13)
 			{
 				//printf("Received: Number Of Completed Packets.\n");
-				packetNotCompleted -= readEvent_outputBuffer[10];
+				if (nbPacketNotCompleted > readEvent_outputBuffer[10])
+				{
+					nbPacketNotCompleted -= readEvent_outputBuffer[10];
+				}
+				else
+				{
+					nbPacketNotCompleted = 0;
+				}
 			}
 		}
 		else
@@ -1569,11 +1579,33 @@ int main()
 		L"WP81_ACL_DATA_RECEIVED"
 	);
 
+	// Prepare to wait for the connection complete event
+	hEventConnCmpltReceived = CreateEventW(
+		NULL,
+		TRUE,	// manually reset
+		FALSE,	// initial state: nonsignaled
+		L"WP81_WAIT_FOR_CONNECTION_COMPLETE"
+	);
+
+	// Prepare to wait for the Long Term Key Request event
+	hEventLTKRqstReceived = CreateEventW(
+		NULL,
+		TRUE,	// manually reset
+		FALSE,	// initial state: nonsignaled
+		L"WP81_WAIT_FOR_LTK_REQUEST"
+	);
+
 	// Start "read events" thread
 	hThreadEvent = CreateThread(NULL, 0, readEvents, NULL, 0, NULL);
 
 	// Start "read ACL data" thread
 	hThreadAclData = CreateThread(NULL, 0, readAclData, NULL, 0, NULL);
+
+reset:
+	// Force a reset of the events in case we have to reset the connection
+	ResetEvent(hEventAclDataReceived);
+	ResetEvent(hEventConnCmpltReceived);
+	ResetEvent(hEventLTKRqstReceived);
 
 	printf("Sending Reset command...\n");
 	i = 0;
@@ -1727,22 +1759,6 @@ int main()
 	printf("Waiting for the end of the Set Advertising Data command...\n");
 	WaitForSingleObject(hEventCmdFinished, 1000);
 
-	// Prepare to wait for the connection complete event
-	hEventConnCmpltReceived = CreateEventW(
-		NULL,
-		TRUE,	// manually reset
-		FALSE,	// initial state: nonsignaled
-		L"WP81_WAIT_FOR_CONNECTION_COMPLETE"
-	);
-
-	// Prepare to wait for the Long Term Key Request event
-	hEventLTKRqstReceived = CreateEventW(
-		NULL,
-		TRUE,	// manually reset
-		FALSE,	// initial state: nonsignaled
-		L"WP81_WAIT_FOR_LTK_REQUEST"
-	);
-
 	printf("Sending LE Set Advertise Enable Command...\n");
 	i = 0;
 	cmd_inputBuffer[i++] = 0x04; // Length of the IOCTL message
@@ -1788,7 +1804,7 @@ int main()
 			break;
 		}
 
-		if (WaitForSingleObject(hEventLTKRqstReceived, 0) == WAIT_OBJECT_0) // We have already waiting for 500ms
+		if (WaitForSingleObject(hEventLTKRqstReceived, 0) == WAIT_OBJECT_0) // We have already waited for 500ms
 		{
 			break;
 		}
@@ -2836,6 +2852,7 @@ int main()
 
 	printf("Start sending Handle Value Notification...\n");
 	mouseDataIdx = 0;
+	nbPacketNotCompleted = 0;
 	while (mainLoop_continue)
 	{
 		// We don't expect to receive any ACL data, but this serves us to temporize our notifications
@@ -2891,43 +2908,49 @@ int main()
 					mouseDataIdx = 0;
 				}
 
-				packetNotCompleted++;
-				if (packetNotCompleted > 2)
+				nbPacketNotCompleted++;
+				if (nbPacketNotCompleted > 20)
 				{
-					printStringValue("Packet not completed!", packetNotCompleted);
+					printStringValue("Packet not completed!", nbPacketNotCompleted);
+					goto reset;
 				}
 			}
 		}
 	}
 
-	//printf("Send LE Set Advertise Disable Command\n");
-	//i = 0;
-	//cmd_inputBuffer[i++] = 0x04; // Length of the IOCTL message
-	//cmd_inputBuffer[i++] = 0x00;
-	//cmd_inputBuffer[i++] = 0x00;
-	//cmd_inputBuffer[i++] = 0x00;
-	//cmd_inputBuffer[i++] = 0x01; // Command
-	//cmd_inputBuffer[i++] = 0x0A; // OGF 0x08, OCF 0x000A
-	//cmd_inputBuffer[i++] = 0x20; // 
-	//cmd_inputBuffer[i++] = 0x01; // Parameter Total Length
-	//cmd_inputBuffer[i++] = 0x00; // Advertising_Disable
-	//printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
-	//success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
-	//if (!success)
-	//{
-	//	printf("Failed to send DeviceIoControl! 0x%08X", GetLastError());
-	//}
-	//else
-	//{
-	//	printf("Set Advertise Disable sent\n");
-	//	printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
-	//	ResetEvent(hEventCmdFinished);
-	//}
-
-	//printf("Wait for the end of the Set Advertise Disable command\n");
-	//WaitForSingleObject(hEventCmdFinished, 10000);
 	result = EXIT_SUCCESS;
 exit:
+	if (isConnCmpltReceived == FALSE)
+	{
+		printf("Send LE Set Advertise Disable Command\n");
+		i = 0;
+		cmd_inputBuffer[i++] = 0x04; // Length of the IOCTL message
+		cmd_inputBuffer[i++] = 0x00;
+		cmd_inputBuffer[i++] = 0x00;
+		cmd_inputBuffer[i++] = 0x00;
+		cmd_inputBuffer[i++] = 0x01; // Command
+		cmd_inputBuffer[i++] = 0x0A; // OGF 0x08, OCF 0x000A
+		cmd_inputBuffer[i++] = 0x20; // 
+		cmd_inputBuffer[i++] = 0x01; // Parameter Total Length
+		cmd_inputBuffer[i++] = 0x00; // Advertising_Disable
+		printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
+		success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
+		if (!success)
+		{
+			printf("Failed to send DeviceIoControl! 0x%08X", GetLastError());
+		}
+		else
+		{
+			printf("Set Advertise Disable sent\n");
+			printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
+			ResetEvent(hEventCmdFinished);
+		}
+
+		printf("Wait for the end of the Set Advertise Disable command\n");
+		WaitForSingleObject(hEventCmdFinished, 1000);
+	}
+
+
 	readLoop_continue = FALSE;
 	printf("Stop then start the Bluetooth of the phone to exit this program.\n");
 
