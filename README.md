@@ -11,7 +11,7 @@ Example of result with a Chromebook:
 At the beginning of the programm, the phone is in advertising mode. 
 This advertising stops as soon as a connection is established with another device.  
 - When the devices were not paired previously, then the phone receives a _Pairing Request_ and a [LE Legacy Pairing](#le-legacy-pairing) starts.  
-- When the devices were paired previously, the phone directly receives a _LTK Request_ and the encryption of the connection starts.
+- When the devices were paired previously, the phone directly receives a _LTK Request_ and the encryption of the connection starts. The LTK(Long Term Key) is the one given during the previous pairing.  
   
 At the end of the both cases, the connection is encrypted and the phone is ready to respond to the ATTributes requests. Then it starts to send the notifications   
 
