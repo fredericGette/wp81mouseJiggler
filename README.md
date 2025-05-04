@@ -6,23 +6,16 @@ Example of result with a Chromebook:
 ![video capture ChromeOS](lumiaMouse520_chromeos.gif)  
 (animated gif optimized with [gifsicle](https://github.com/kohler/gifsicle))  
 
-Tested with the following configurations:
-- Ubuntu 23.10 (Dell Latitude E5470)
-- ChromeOS 134.0 (ASUS CX5601)
-- Windows 10 Pro (Dell Latitude E5470)
-- Windows 8.1 Pro (Dell Latitude E5470)
-- Android 10 (Google Pixel)
-- Android 15 (Google Pixel 7a)
+## Description
 
 At the beginning of the programm, the phone is in advertising mode. 
 This advertising stops as soon as a connection is established with another device.  
-- When the devices were not paired previously, then the phone receives a _Pairing Request_ and a _LE Legacy Pairing_ starts.  
+- When the devices were not paired previously, then the phone receives a _Pairing Request_ and a [LE Legacy Pairing](#le-legacy-pairing) starts.  
 - When the devices were paired previously, the phone directly receives a _LTK Request_ and the encryption of the connection starts.
   
-At the end of the both cases, the connection is encrypted and the phone is ready to respond to the ATTributes requests. Then it starts to send notifications   
+At the end of the both cases, the connection is encrypted and the phone is ready to respond to the ATTributes requests. Then it starts to send the notifications   
 
-
-LE Legacy Pairing:  
+<a name="le-legacy-pairing">LE Legacy Pairing:</a>
 | | mouse | | computer | |
 |:-:|-:|:-:|:-|:-|
 |1| | <- | Pairing Request | |
@@ -54,3 +47,12 @@ The computer (or any other device) is:
 
 >[!WARNING]
 >For an unkown reason you have to reboot the phone when no connection is established during the advertising phase. Otherwise no further connection can be established during the next advertising phase.
+
+Tested with the following configurations:
+- Ubuntu 23.10 (Dell Latitude E5470)
+- ChromeOS 134.0 (ASUS CX5601)
+- Windows 10 Pro (Dell Latitude E5470)
+- Windows 8.1 Pro (Dell Latitude E5470)
+- Android 10 (Google Pixel)
+- Android 15 (Google Pixel 7a)
+
