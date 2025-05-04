@@ -15,7 +15,7 @@ This advertising stops as soon as a connection is established with another devic
   
 At the end of the both cases, the connection is encrypted and the phone is ready to respond to the ATTributes requests. Then it starts to send the [notifications](#notification).   
 
-<a name="le-legacy-pairing">LE Legacy Pairing:</a>
+<a name="le-legacy-pairing">LE Legacy Pairing:</a>  
 | | mouse | | computer | |
 |:-:|-:|:-:|:-|:-|
 |1| | <- | Pairing Request | |
@@ -40,7 +40,17 @@ The computer (or any other device) is:
 - The **Initiator** device during the pairing process
 - The Attribute **Client**
 
-<a name="notification">Notification:</a>
+<a name="notification">Notification:</a>  
+The format of a notification is described by the _Report Map_ send by the phone (on request from the other device).  
+In our case, the content of a notification is the following:  
+
+| Bytes | Description | 
+|:-:|:-:|
+|0| 5 Buttons, one bit for each button: 0b00011111 |
+|1-2| Signed value of the X mouvement |
+|3-4| Signed value of the Y mouvement |
+|5-6| Signed value of the wheel mouvement |
+|7-8| Signed value of a second wheel mouvement |
 
 >[!NOTE]
 >Some Attribute Clients (like ChromeOS) require a Maximum Transmission Unit (MTU) of 23 bytes.  
