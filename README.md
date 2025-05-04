@@ -42,7 +42,7 @@ The computer (or any other device) is:
 
 >[!NOTE]
 >Some Attribute Clients (like ChromeOS) require a Maximum Transmission Unit (MTU) of 23 bytes.  
->In the case of the Lumia 520, the number of messages lost increases when the Connection Interval is above 7.5ms (this is the minimum Connection Interval authorized).
+>In the case of the Lumia 520, it looks like the number of messages lost increases when the Connection Interval is above 7.5ms (this is the minimum Connection Interval authorized).
 >Sometimes the notifications send by the phone are stalling. It looks like this is caused by a MIC(Message Integrity Check) error. When this problem is detected, the program automatically reset the connection.
 
 >[!WARNING]
