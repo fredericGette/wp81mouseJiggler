@@ -68,3 +68,12 @@ Tested with the following configurations:
 - Android 10 (Google Pixel)
 - Android 15 (Google Pixel 7a)
 
+## Deployment
+
+- [Install a telnet server on the phone](https://github.com/fredericGette/wp81documentation/tree/main/telnetOverUsb#readme), in order to run the application.  
+- Manually copy the executable from the root of this GitHub repository to the shared folder of the phone.
+> [!NOTE]
+> When you connect your phone with a USB cable, this folder is visible in the Explorer of your computer. And in the phone, this folder is mounted in `C:\Data\USERS\Public\Documents`
+
+This program requires the kernel drivers "wp81controldevice.sys" and "wp81hcifilter.sys"  
+See [wp81btmon](https://github.com/fredericGette/wp81btmon/tree/main?tab=readme-ov-file#installation-of-the-kernel-drivers-wp81controldevicesys-and-wp81hcifiltersys) for their installation.  
