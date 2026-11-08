@@ -18,7 +18,36 @@
 #include <stdint.h>
 #include "aes128.h"
 
+typedef struct _STARTUPINFOA {
+	DWORD   cb;
+	LPSTR   lpReserved;
+	LPSTR   lpDesktop;
+	LPSTR   lpTitle;
+	DWORD   dwX;
+	DWORD   dwY;
+	DWORD   dwXSize;
+	DWORD   dwYSize;
+	DWORD   dwXCountChars;
+	DWORD   dwYCountChars;
+	DWORD   dwFillAttribute;
+	DWORD   dwFlags;
+	WORD    wShowWindow;
+	WORD    cbReserved2;
+	LPBYTE  lpReserved2;
+	HANDLE  hStdInput;
+	HANDLE  hStdOutput;
+	HANDLE  hStdError;
+} STARTUPINFOA, *LPSTARTUPINFOA;
+
+typedef struct _PROCESS_INFORMATION {
+	HANDLE hProcess;
+	HANDLE hThread;
+	DWORD dwProcessId;
+	DWORD dwThreadId;
+} PROCESS_INFORMATION, *PPROCESS_INFORMATION, *LPPROCESS_INFORMATION;
+
 extern "C" {
+	WINBASEAPI BOOL WINAPI CreateProcessA(LPCSTR lpApplicationName, LPSTR lpCommandLine, LPSECURITY_ATTRIBUTES lpProcessAttributes, LPSECURITY_ATTRIBUTES lpThreadAttributes, BOOL bInheritHandles, DWORD dwCreationFlags, LPVOID lpEnvironment, LPCSTR lpCurrentDirectory, LPSTARTUPINFOA lpStartupInfo, LPPROCESS_INFORMATION lpProcessInformation);
 	WINBASEAPI HANDLE WINAPI CreateFileA(LPCSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
 	WINBASEAPI BOOL	WINAPI SetConsoleCtrlHandler(PHANDLER_ROUTINE HandlerRoutine, BOOL Add);
 	char *getenv(const char *varname);

@@ -1,0 +1,22 @@
+{
+  "configurations": [
+    {
+      "name": "Win8.1-ARM32",
+      "includePath": [
+        "C:/Program Files (x86)/Windows Phone Kits/8.1/Include/**",
+		    "C:/Program Files (x86)/Microsoft Visual Studio 11.0/VC/WPSDK/include/**"
+      ],
+      "defines": [
+        "_WIN32",
+        "WINAPI_FAMILY=WINAPI_FAMILY_PHONE_APP",
+        "_WIN32_WINNT=0x0603"
+      ],
+      "compilerPath": "C:/Program Files/LLVM/bin/clang-cl.exe",
+      "compilerArgs": [
+          "--target=armv7-pc-windows-msvc"
+      ],
+      "intelliSenseMode": "windows-clang-arm"
+    }
+  ],
+  "version": 4
+}

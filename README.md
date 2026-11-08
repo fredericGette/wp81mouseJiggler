@@ -80,4 +80,7 @@ Tested with the following configurations:
 > When you connect your phone with a USB cable, this folder is visible in the Explorer of your computer. And in the phone, this folder is mounted in `C:\Data\USERS\Public\Documents`
 
 This program requires **the kernel drivers "wp81controldevice.sys" and "wp81hcifilter.sys"**  
-See [wp81btmon](https://github.com/fredericGette/wp81btmon/tree/main?tab=readme-ov-file#installation-of-the-kernel-drivers-wp81controldevicesys-and-wp81hcifiltersys) for their installation.  
+See [wp81btmon](https://github.com/fredericGette/wp81btmon/tree/main?tab=readme-ov-file#installation-of-the-kernel-drivers-wp81controldevicesys-and-wp81hcifiltersys) for their installation.
+
+The program starts the driver "wp81controldevice" (`sc start wp81controldevice`) and switches the Bluetooth radio on at startup, then switches it off at exit.
+For that, **"wp81powertool.exe" must be in the PATH** (or in the current folder).  
