@@ -8,6 +8,15 @@ Example of result with a Chromebook:
 
 ## Usage
 
+```
+wp81mouseJiggler.exe [-nopoll]
+```
+
+- The program switches the Bluetooth radio on, advertises as a mouse named _LumiaMouse520_ and waits for a connection.
+- Stop it with `CTRL+C`: an established connection is closed properly (or the advertising is stopped), then the Bluetooth radio is switched off.
+- `-nopoll` disables the periodic polling of the controller (see the note below). For debugging only.
+- The HCI messages are logged in `C:\Data\USERS\Public\Documents\wp81mouseJiggler.log`.
+
 ![Example](Capture01.PNG)
 
 ## Description
@@ -61,8 +70,13 @@ In our case, the content of a notification is the following:
 >In the case of the Lumia 520, it seems the number of messages lost increases when the Connection Interval is above 7.5ms (this is the minimum Connection Interval authorized).  
 >Sometimes the notifications send by the phone are stalling. It looks like this is caused by a MIC(Message Integrity Check) error. When this problem is detected, the program automatically reset the connection.
 
->[!WARNING]
->For an unkown reason you have to reboot the phone when no connection is established during the advertising phase. Otherwise no further connection can be established during the next advertising phase.
+>[!NOTE]
+>The Qualcomm driver of the Lumia 520 (_qcbluetooth8930.sys_) keeps the received HCI events and ACL data in a queue while its child device idles in a low power state, and delivers a queued packet only when another packet arrives from the controller.
+>That's why the program sends a harmless command (_LE Read Advertising Channel Tx Power_) to the controller every 500ms while it waits for an event or ACL data.
+
+>[!NOTE]
+>Previous versions required a reboot of the phone when no connection was established during the advertising phase.
+>This was caused by a malformed _LE Set Advertising Parameters_ command (its last parameter, _Advertising_Filter_Policy_, was not sent), and is fixed.
 
 Tested with the following configurations:
 - Ubuntu 23.10 (Dell Latitude E5470)
@@ -84,3 +98,15 @@ See [wp81btmon](https://github.com/fredericGette/wp81btmon/tree/main?tab=readme-
 
 The program starts the driver "wp81controldevice" (`sc start wp81controldevice`) and switches the Bluetooth radio on at startup, then switches it off at exit.
 For that, **"wp81powertool.exe" must be in the PATH** (or in the current folder).  
+
+## Compilation
+
+The program is built with LLVM (clang-cl), CMake and Ninja, using the Windows Phone 8.1 SDK. See [Console application building with VS Code](https://github.com/fredericGette/wp81documentation/tree/main/ConsoleApplicationBuilding/vscode#readme).
+
+```
+cd wp81mouseJiggler
+cmake --preset arm32-windows
+cmake --build build
+```
+
+The executable is generated in `wp81mouseJiggler/build/`.

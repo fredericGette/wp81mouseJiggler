@@ -56,18 +56,11 @@ static BOOL isConnCmpltReceived = FALSE;
 #define POLL_OPCODE_MSB		0x20 //
 #define POLL_PERIOD_MS		500
 static BOOL isPollingEnabled = TRUE;
-static BOOL isResetEnabled = TRUE; // Command line switch "-noreset" disables the HCI Reset command (diagnostic)
 static HANDLE hciControlDevicePoll = INVALID_HANDLE_VALUE;
 static DWORD lastPollTick = 0;
 
 static volatile BOOL isReadEventsReady = FALSE;
 static volatile BOOL isReadAclDataReady = FALSE;
-
-// Read RSSI: used to check the controller doesn't hold an old connection after the Reset.
-static HANDLE hEventRssiReceived = NULL;
-static volatile BYTE rssiStatus;
-static volatile BYTE rssiHandle[2];	// LSB first
-static volatile BYTE rssiValue;
 
 // Disconnection Complete: used to close the connection when the program is terminated.
 static HANDLE hEventDisconnCmpltReceived = NULL;
@@ -236,77 +229,6 @@ void ExecuteWithCreateProcess(const char* commandLine)
 	CloseHandle(pi.hThread);
 }
 
-// Diagnostic: check the controller doesn't hold a connection anymore (it should not after the Reset command).
-// A Read RSSI command is sent for each connection handle 0x0000-0x000F:
-// status 0x00 means the connection still exists, status 0x02 (Unknown Connection Identifier) means it doesn't.
-// Returns the handle of the first connection found, or 0xFFFF if none.
-WORD checkNoConnectionLeft(HANDLE hciControlDeviceCmd, BYTE* cmd_inputBuffer, BYTE* cmd_outputBuffer)
-{
-	DWORD returned;
-	int i;
-	int nbConnections = 0;
-	int nbTimeouts = 0;
-	WORD firstConnection = 0xFFFF;
-
-	printf("Checking the controller doesn't hold a connection anymore (Read RSSI on handles 0x0000-0x000F)...\n");
-	for (WORD handle = 0x0000; handle <= 0x000F; handle++)
-	{
-		i = 0;
-		cmd_inputBuffer[i++] = 0x05; // Length of the IOCTL message
-		cmd_inputBuffer[i++] = 0x00;
-		cmd_inputBuffer[i++] = 0x00;
-		cmd_inputBuffer[i++] = 0x00;
-		cmd_inputBuffer[i++] = 0x01; // Command
-		cmd_inputBuffer[i++] = 0x05; // OGF 0x05, OCF 0x0005
-		cmd_inputBuffer[i++] = 0x14; //
-		cmd_inputBuffer[i++] = 0x02; // Parameter Total Length
-		cmd_inputBuffer[i++] = (BYTE)(handle & 0xFF); // Connection_Handle
-		cmd_inputBuffer[i++] = (BYTE)(handle >> 8);   //
-		printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
-		ResetEvent(hEventRssiReceived);
-		if (!DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL))
-		{
-			printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
-			return firstConnection;
-		}
-
-		// Wait for the Command Complete of this handle (ignore a late one of a previous handle).
-		BOOL received = FALSE;
-		DWORD start = GetTickCount();
-		DWORD elapsed;
-		while (!received && (elapsed = GetTickCount() - start) < 1000)
-		{
-			if (waitAndPoll(hEventRssiReceived, 1000 - elapsed) != WAIT_OBJECT_0)
-			{
-				break;
-			}
-			ResetEvent(hEventRssiReceived);
-			received = (rssiHandle[0] | (rssiHandle[1] << 8)) == handle;
-		}
-
-		if (!received)
-		{
-			printf("  Handle 0x%04X: no answer.\n", handle);
-			nbTimeouts++;
-		}
-		else if (rssiStatus == 0x00)
-		{
-			printf("  Handle 0x%04X: A CONNECTION STILL EXISTS (RSSI %d dBm)!\n", handle, (int)(signed char)rssiValue);
-			nbConnections++;
-			if (firstConnection == 0xFFFF)
-			{
-				firstConnection = handle;
-			}
-		}
-		else if (rssiStatus != 0x02)
-		{
-			printf("  Handle 0x%04X: status 0x%02X.\n", handle, rssiStatus);
-		}
-	}
-	printf("Check done: %d connection(s) left in the controller, %d handle(s) without answer.\n", nbConnections, nbTimeouts);
-	return firstConnection;
-}
-
 // Close the connection (Reason: Remote User Terminated Connection) and wait for the Disconnection Complete event.
 void disconnect(HANDLE hciControlDeviceCmd, BYTE* cmd_inputBuffer, BYTE* cmd_outputBuffer)
 {
@@ -422,15 +344,6 @@ DWORD WINAPI readEvents(void* notUsed)
 				printf("Received: Read BD ADDR Command complete.\n");
 				storeRespondingDeviceInformation(readEvent_outputBuffer);
 				SetEvent(hEventCmdFinished);
-			}
-			else if (returned == 14 && readEvent_outputBuffer[5] == 0x0E && readEvent_outputBuffer[8] == 0x05 && readEvent_outputBuffer[9] == 0x14)
-			{
-				// Read RSSI Command complete (printed by the main thread)
-				rssiStatus = readEvent_outputBuffer[10];
-				rssiHandle[0] = readEvent_outputBuffer[11];
-				rssiHandle[1] = readEvent_outputBuffer[12];
-				rssiValue = readEvent_outputBuffer[13];
-				SetEvent(hEventRssiReceived);
 			}
 			else if (returned == 11 && readEvent_outputBuffer[5] == 0x0F)
 			{
@@ -1780,18 +1693,13 @@ int main(int argc, char* argv[])
 		{
 			isPollingEnabled = FALSE;
 		}
-		else if (_stricmp(argv[a], "-noreset") == 0)
-		{
-			isResetEnabled = FALSE;
-		}
 		else
 		{
-			printf("Usage: %s [-nopoll] [-noreset]\n", argv[0]);
+			printf("Usage: %s [-nopoll]\n", argv[0]);
 			return EXIT_FAILURE;
 		}
 	}
 	printf("Polling of the controller %s.\n", isPollingEnabled ? "enabled" : "disabled");
-	printf("Reset command %s.\n", isResetEnabled ? "enabled" : "disabled");
 
 	mainLoop_continue = TRUE;
 	SetConsoleCtrlHandler(consoleHandler, TRUE);
@@ -1865,7 +1773,6 @@ int main(int argc, char* argv[])
 		L"WP81_WAIT_FOR_LTK_REQUEST"
 	);
 
-	hEventRssiReceived = CreateEventW(NULL, TRUE, FALSE, NULL);			// manually reset, initial state: nonsignaled
 	hEventDisconnCmpltReceived = CreateEventW(NULL, TRUE, FALSE, NULL);	// manually reset, initial state: nonsignaled
 
 	// Start "read events" thread
@@ -1886,13 +1793,6 @@ reset:
 	ResetEvent(hEventAclDataReceived);
 	ResetEvent(hEventConnCmpltReceived);
 	ResetEvent(hEventLTKRqstReceived);
-
-	if (!isResetEnabled)
-	{
-		// Diagnostic: keep the configuration done by the Windows Bluetooth stack when the radio was switched on.
-		printf("Reset command skipped (-noreset).\n");
-		goto afterReset;
-	}
 
 	printf("Sending Reset command...\n");
 	i = 0;
@@ -1921,10 +1821,8 @@ reset:
 	printf("Waiting for the end of the Reset command...\n");
 	WaitForSingleObject(hEventCmdFinished, 1000);
 
-afterReset:
 	// The LE Meta events (LE Connection Complete, LE Long Term Key Request...) are disabled by default (bit 61 of the Event Mask).
-	// Don't rely on the masks left by the Windows Bluetooth stack: without them, a master can connect
-	// but we never receive the LE Connection Complete nor the LTK Request events.
+	// Enable explicitly the events we need instead of relying on the masks left by the Windows Bluetooth stack.
 	printf("Sending Set Event Mask Command...\n");
 	i = 0;
 	cmd_inputBuffer[i++] = 0x0B; // Length of the IOCTL message
@@ -1985,31 +1883,6 @@ afterReset:
 	printf("Waiting for the end of the LE Set Event Mask command...\n");
 	waitAndPoll(hEventCmdFinished, 1000);
 
-	// The Windows Bluetooth stack sets "LE Supported (Host)" when the radio is switched on, but the Reset command clears it.
-	printf("Sending Write LE Host Supported Command...\n");
-	i = 0;
-	cmd_inputBuffer[i++] = 0x05; // Length of the IOCTL message
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x00;
-	cmd_inputBuffer[i++] = 0x01; // Command
-	cmd_inputBuffer[i++] = 0x6D; // OGF 0x03, OCF 0x006D
-	cmd_inputBuffer[i++] = 0x0C; //
-	cmd_inputBuffer[i++] = 0x02; // Parameter Total Length
-	cmd_inputBuffer[i++] = 0x01; // LE_Supported_Host: enabled
-	cmd_inputBuffer[i++] = 0x01; // Simultaneous_LE_Host (same value as the Windows Bluetooth stack)
-	printBuffer2HexString(cmd_inputBuffer, i, FALSE, 'c');
-	ResetEvent(hEventCmdFinished);
-	success = DeviceIoControl(hciControlDeviceCmd, IOCTL_CONTROL_WRITE_HCI, cmd_inputBuffer, i, cmd_outputBuffer, 4, &returned, NULL);
-	if (!success)
-	{
-		printf("Failed to send DeviceIoControl! 0x%08X\n", GetLastError());
-		goto exit;
-	}
-	printBuffer2HexString(cmd_outputBuffer, returned, TRUE, 'c');
-	printf("Waiting for the end of the Write LE Host Supported command...\n");
-	waitAndPoll(hEventCmdFinished, 1000);
-
 	printf("Sending Read BD_ADDR Command...\n");
 	i = 0;
 	cmd_inputBuffer[i++] = 0x03; // Length of the IOCTL message
@@ -2036,7 +1909,7 @@ afterReset:
 
 	printf("Sending LE Set Advertising Parameters Command...\n");
 	i = 0;
-	cmd_inputBuffer[i++] = 0x11; // Length of the IOCTL message
+	cmd_inputBuffer[i++] = 0x12; // Length of the IOCTL message (was 0x11: the last parameter, Advertising_Filter_Policy, was not sent)
 	cmd_inputBuffer[i++] = 0x00;
 	cmd_inputBuffer[i++] = 0x00;
 	cmd_inputBuffer[i++] = 0x00;
@@ -2134,8 +2007,6 @@ afterReset:
 
 	printf("Waiting for the end of the Set Advertising Data command...\n");
 	WaitForSingleObject(hEventCmdFinished, 1000);
-
-	checkNoConnectionLeft(hciControlDeviceCmd, cmd_inputBuffer, cmd_outputBuffer);
 
 	printf("Sending LE Set Advertise Enable Command...\n");
 	i = 0;
@@ -3300,17 +3171,6 @@ afterReset:
 exit:
 	if (isConnCmpltReceived == FALSE)
 	{
-		// Diagnostic: a master may have connected although we didn't receive the LE Connection Complete event.
-		printf("No Connection Complete received during the advertising.\n");
-		WORD leftover = checkNoConnectionLeft(hciControlDeviceCmd, cmd_inputBuffer, cmd_outputBuffer);
-		if (leftover != 0xFFFF)
-		{
-			// Diagnostic: does the controller report the Disconnection Complete of a connection it didn't report?
-			connectionHandle[0] = (BYTE)(leftover & 0xFF);
-			connectionHandle[1] = (BYTE)(leftover >> 8);
-			disconnect(hciControlDeviceCmd, cmd_inputBuffer, cmd_outputBuffer);
-		}
-
 		printf("Send LE Set Advertise Disable Command\n");
 		i = 0;
 		cmd_inputBuffer[i++] = 0x04; // Length of the IOCTL message
